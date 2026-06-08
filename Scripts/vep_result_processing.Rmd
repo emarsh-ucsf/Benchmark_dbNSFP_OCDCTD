@@ -1,0 +1,155 @@
+---
+title: "vep_result_processing"
+author: "Evan Marshman"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup}
+library(tidyverse)
+```
+
+
+```{r file_read_in}
+
+load("./all_processedVariants_burdenAnalyses_Apr2026.rda")
+
+vep_table <- read.delim("output_tada.tsv")
+
+filter_table <- vep_table %>%
+  filter(CANONICAL == "YES") %>% # costly for 4
+  filter(SYMBOL != "")
+
+write_delim(filter_table, "filtered_output.tsv",delim = "\t")
+
+```
+
+
+```{r QC}
+dn_tada_tester <- read_delim("cleaned_filtered_output.tsv")
+
+dn_tada_evan <- read_delim("cleaned_filtered_output.tsv")
+
+dn_tada_evan$MPC_score[dn_tada_evan$MPC_score == "-"] <- NA
+dn_tada_evan$AlphaMissense_score[dn_tada_evan$AlphaMissense_score == "-"] <- NA
+
+
+dn_tada_evan <- dn_tada_evan %>%
+  filter(!is.na(Consequence_simple))
+
+
+
+## Adapted from BWOCDworking1.3_format_OCDTS_dnVars.R ===
+coding_del_order <- c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant",
+                       "inframe_deletion", "inframe_insertion", "missense_variant", "start_lost", "stop_lost", "synonymous_variant") # costly for 1
+
+
+nrow(dn_tada_evan)
+dn_tada_evan_trim = dn_tada_evan %>%
+  # Order the 'Consequence_simple' by the specified order
+  mutate(Consequence_level = factor(Consequence_simple, levels = coding_del_order, ordered = TRUE),
+         AlphaMissense_patho_class = factor(AlphaMissense_pred,
+                 levels = c("P", "LP", "A", "LB", "B"), ordered=TRUE)) %>%
+  # Prioritize by PTV > in frame indel > missense (desc MPC, desc AlphaMissense) > start_lost > stop_lost > syn
+  arrange(Consequence_level,
+          desc(MPC_score), # prioritize by MPCnew (higher = priority)
+          desc(AlphaMissense_score)   # prioritize by AlphaMissense_score (higher = priority)
+          # AlphaMissense_patho_class # only if score was not exported
+  ) 
+
+#%>%
+#  # Keep only the most prioritized row (first one) in each group
+#  group_by(SYMBOL) %>%
+#  dplyr::slice(1) %>%
+#  ungroup()
+
+nrow(dn_tada_evan_trim)
+
+# to compare to
+nrow(dn_tada)
+
+```
+
+
+```{r EDA}
+
+dn_tada_evan_trim<- dn_tada_evan_trim %>%
+  mutate(Location = paste0("chr", Location))
+
+common_values <- setdiff(dn_tada_evan_trim$Location, dn_tada$vep.Location)
+
+common_values <- setdiff(dn_tada$vep.Location, dn_tada_evan_trim$Location)
+
+length(common_values)
+
+common_values
+
+```
+
+```{r fix}
+
+dn_tada_evan_trim[2877, 2] <- "chr16:31224189-31224190"
+dn_tada_evan_trim[2850, 2] <- "chr2:232567138-232567139"
+dn_tada_evan_trim[440, 2] <- "chr16:49636751-49636757"
+
+dn_tada_evan_final <- unique(dn_tada_evan_trim)
+
+```
+
+
+```{r test}
+
+to_join <- dn_tada %>% select(id_external:vep.Location) %>% rename(Location = vep.Location)
+
+
+unique(merge(to_join, dn_tada_evan_final, by = "Location", all.x = TRUE))
+
+setdiff(unique(dn_tada$id_external), unique(merge(to_join, dn_tada_evan_final, by = "Location")$id_external))
+
+```
+
+
+```{r test}
+dn_tada_evan_trim[duplicated(dn_tada_evan_trim),]
+
+
+unique(dn_tada_evan_trim)
+
+
+```
+
+
+```{r}
+
+nsfp_dn_tada <- merge(to_join, dn_tada_evan_final, by = "Location", all.x = TRUE)
+
+coding_del_order <- c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant",
+                       "inframe_deletion", "inframe_insertion", "missense_variant", "start_lost", "stop_lost", "synonymous_variant") # costly for 1
+
+
+nrow(nsfp_dn_tada)
+nsfp_dn_tada_trim = nsfp_dn_tada %>%
+  # Order the 'Consequence_simple' by the specified order
+  mutate(Consequence_level = factor(Consequence_simple, levels = coding_del_order, ordered = TRUE),
+         AlphaMissense_patho_class = factor(AlphaMissense_pred,
+                 levels = c("P", "LP", "A", "LB", "B"), ordered=TRUE)) %>%
+  # Prioritize by PTV > in frame indel > missense (desc MPC, desc AlphaMissense) > start_lost > stop_lost > syn
+  arrange(Consequence_level,
+          desc(MPC_score), # prioritize by MPCnew (higher = priority)
+          desc(AlphaMissense_score)   # prioritize by AlphaMissense_score (higher = priority)
+          # AlphaMissense_patho_class # only if score was not exported
+  ) %>%
+ # Keep only the most prioritized row (first one) in each group
+ group_by(id_external, SYMBOL) %>%
+ dplyr::slice(1) %>%
+ ungroup()
+
+nrow(nsfp_dn_tada_trim)
+
+write_delim(nsfp_dn_tada_trim, "nsfp_dn_tada_trim.tsv",delim = "\t")
+
+setdiff(nsfp_dn_tada, nsfp_dn_tada_trim)
+
+setdiff(unique(dn_tada$vep.Location), unique(nsfp_dn_tada_trim$Location))
+
+```

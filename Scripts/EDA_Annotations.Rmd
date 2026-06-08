@@ -1,0 +1,1600 @@
+---
+title: "Annotation_Distributions"
+author: "Evan Marshman"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+library(tidyverse)
+library(gridExtra)
+library(pROC)
+```
+
+
+```{r file_read_in}
+
+annotations <- read_delim("nsfp_dn_tada_trim.tsv")
+
+missense_annots <- annotations %>%
+  filter(Consequence_simple == "missense_variant")
+
+dim(annotations)
+
+annotations %>%
+  filter(Consequence_simple != "NA") %>%
+  count(Consequence_simple, name = "count") %>%
+  ggplot(aes(x = reorder(Consequence_simple, count), y = count)) +
+  geom_col() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1))+
+  coord_flip() + theme_classic() +
+  labs(x = "Variant Type", y = "Count")
+```
+
+```{r lgd}
+scores <- cons %>%
+  select(transcript, lof.oe_ci.upper_bin_decile, lof_hc_lc.pLI)
+
+lgds <- annotations %>%
+  filter(Consequence_simple %in% c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant")) %>%
+  mutate(transcript = str_split_i(Feature, pattern = "\\.", i = 1)) %>%
+  left_join(scores)
+
+dim(lgds)
+table(lgds$Consequence_simple)
+
+roc_curve <- roc(lgds$is_ctrl, lgds$lof.oe_ci.upper_bin_decile)
+roc_curve2 <- roc(lgds$is_ctrl, lgds$lof_hc_lc.pLI)
+
+
+# 3. Combine them into a named list
+roc_list <- list(LOEUF = roc_curve, 
+                 pLI = roc_curve2)
+
+roc_list_miss <- list(MPC = mpc_roc,
+                      PolyPhen_HDIV = polyphen_roc,
+                      AlphaMissense = alpha_roc,
+                      M_CAP = mcap_roc,
+                      GERP_NR = gerpnr_roc,
+                      GERP_RS = gerprs_roc,
+                      phastCons17 = phast17,
+                      phyloP17 = phyloP_roc
+                      )
+
+# 4. Plot together using ggroc
+ggroc(roc_list_miss, size = 1) +
+  theme_minimal() +
+  labs(title = "ROC Curve Comparison (missense variants)", 
+       color = "Models", y = "Sensitivity", x = "Specificity") +
+  geom_abline(slope = 1, intercept = 1, linetype = "dashed", color = "black")
+
+plot(roc_curve2, col = "blue", main = "ROC Curve (LOEUF)", print.auc = TRUE)
+
+
+
+
+new_labels <- c("0" = "Case", "1" = "Control")
+
+lgds %>%
+  ggplot(aes(lof.oe_ci.upper_bin_decile)) +
+  labs(x = "pLI Score") +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+```
+
+```{r MPC}
+mpc_annotations <- annotations %>%
+  filter(!is.na(MPC_score))
+
+dim(mpc_annotations)
+unique(mpc_annotations$Consequence_simple)
+
+mpc_roc <- roc(mpc_annotations$is_ctrl, mpc_annotations$MPC_score)
+
+plot(mpc_roc, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mpc_annotations %>%
+  ggplot(aes(MPC_score)) +
+  labs(x = "MPC Score") +
+  geom_histogram(binwidth = .25, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .25, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  )+
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+
+```
+
+```{r Polyphen}
+polyphen_annotations <- annotations %>%
+  filter(Polyphen2_HDIV_pred != "-") %>%
+  mutate(Polyphen2_HDIV_rankscore = as.numeric(Polyphen2_HDIV_rankscore),
+         Polyphen2_HDIV_score = as.numeric(Polyphen2_HDIV_score),
+         Polyphen2_HVAR_pred = as.numeric(Polyphen2_HVAR_rankscore),
+         Polyphen2_HVAR_score = as.numeric(Polyphen2_HVAR_score)
+  )
+
+polyphen_annotations_miss <- missense_annots %>%
+  filter(Polyphen2_HDIV_pred != "-") %>%
+  mutate(Polyphen2_HDIV_rankscore = as.numeric(Polyphen2_HDIV_rankscore),
+         Polyphen2_HDIV_score = as.numeric(Polyphen2_HDIV_score),
+         Polyphen2_HVAR_pred = as.numeric(Polyphen2_HVAR_rankscore),
+         Polyphen2_HVAR_score = as.numeric(Polyphen2_HVAR_score)
+  )
+
+
+dim(polyphen_annotations_miss)
+unique(polyphen_annotations$Consequence_simple)
+table(polyphen_annotations$Consequence_simple)
+
+polyphen_roc <- roc(polyphen_annotations_miss$is_ctrl, polyphen_annotations_miss$Polyphen2_HDIV_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+
+polyphen_annotations %>%
+  ggplot(aes(Polyphen2_HVAR_score)) +
+  labs(x = "Polyphen HVAR Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = 0
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+
+
+polyphen_annotations %>%
+  ggplot(aes(Polyphen2_HDIV_score, Polyphen2_HVAR_score, colour = is_ctrl)) +
+  geom_point() +
+  geom_hline(yintercept = .5)+
+  geom_vline(xintercept = .5)
+
+polyphen_annotations %>%
+  mutate(M.CAP_score = as.numeric(M.CAP_score)) %>%
+  ggplot(aes(Polyphen2_HDIV_score, M.CAP_score)) +
+  geom_point() +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+polyphen_annotations %>%
+  mutate(ClinPred_score = as.numeric(ClinPred_score)) %>%
+  filter(Polyphen2_HDIV_score > 0.25 & ClinPred_score < 0.25) %>%
+  select(SYMBOL) %>%
+  as.list() %>%
+  lapply(sort)
+
+polyphen_annotations %>%
+  ggplot(aes(x = Polyphen2_HDIV_pred, y = Polyphen2_HDIV_score)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  ylim(0, 1) +
+  geom_hline(yintercept = .95)+
+  geom_hline(yintercept = .1)
+  # theme_minimal()
+
+```
+
+
+
+
+
+
+
+
+```{r aloft}
+aloft_annotations <- annotations %>%
+  filter(Aloft_prob_Tolerant != "-") %>%
+  mutate(Aloft_prob_Tolerant = as.numeric(Aloft_prob_Tolerant),
+         Aloft_prob_Dominant = as.numeric(Aloft_prob_Dominant),
+         Aloft_prob_Recessive = as.numeric(Aloft_prob_Recessive)
+  )
+
+
+dim(aloft_annotations)
+
+unique(aloft_annotations$Consequence_simple)
+
+table(aloft_annotations$Aloft_Confidence)
+table(aloft_annotations$Aloft_pred)
+
+table(aloft_annotations$Aloft_Fraction_transcripts_affected)
+
+
+p1 <- aloft_annotations %>%
+  ggplot(aes(aloft_annotations$Aloft_prob_Tolerant)) +
+  labs(x = "Aloft Probablitity Tolerant") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  )
+
+p2 <- aloft_annotations %>%
+  ggplot(aes(aloft_annotations$Aloft_prob_Dominant)) +
+  labs(x = "Aloft Probablitity Dominant") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  )
+
+p3 <- aloft_annotations %>%
+  ggplot(aes(x = Aloft_pred, y = Aloft_prob_Tolerant)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  theme_minimal()
+
+
+```
+
+```{r alphamissense}
+alphamissense_annotations <- annotations %>%
+  filter(AlphaMissense_pred != "-")
+
+
+dim(alphamissense_annotations)
+
+unique(alphamissense_annotations$Consequence_simple)
+table(alphamissense_annotations$AlphaMissense_pred)
+
+alpha_roc <- roc(alphamissense_annotations$is_ctrl, alphamissense_annotations$AlphaMissense_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+
+alphamissense_annotations %>%
+  ggplot(aes(AlphaMissense_score)) +
+  labs(x = "AlphaMissense Score") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  )+
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+alphamissense_annotations %>%
+  ggplot(aes(x = AlphaMissense_pred, y = AlphaMissense_score)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  ylim(0, 1) +
+  geom_hline(yintercept = .95)+
+  geom_hline(yintercept = .1)
+  # theme_minimal()
+
+
+range(alphamissense_annotations$AlphaMissense_score)
+
+
+alphamissense_annotations_low <- alphamissense_annotations %>%
+  filter(AlphaMissense_score < 0.1)
+
+alphamissense_annotations_high <- alphamissense_annotations %>%
+  filter(AlphaMissense_score > 0.95)
+
+alphamissense_annotations_extreme <- alphamissense_annotations %>%
+  filter(AlphaMissense_score > 0.79 | AlphaMissense_score < 0.22)
+
+table(alphamissense_annotations_high$is_ctrl)
+
+table(alphamissense_annotations_low$is_ctrl)
+
+```
+
+```{r bayesdel}
+bayesdel_annotations <- annotations %>%
+  filter(BayesDel_addAF_pred != "-") %>%
+  mutate(BayesDel_addAF_score = as.numeric(BayesDel_addAF_score),
+         BayesDel_noAF_score = as.numeric(BayesDel_noAF_score)
+  )
+
+bayesdel_annotations_miss <- missense_annots %>%
+  filter(BayesDel_addAF_pred != "-") %>%
+  mutate(BayesDel_addAF_score = as.numeric(BayesDel_addAF_score),
+         BayesDel_noAF_score = as.numeric(BayesDel_noAF_score)
+  )
+
+dim(bayesdel_annotations_miss)
+
+unique(bayesdel_annotations$Consequence_simple)
+table(bayesdel_annotations$Consequence_simple)
+
+table(bayesdel_annotations$BayesDel_addAF_pred)
+table(bayesdel_annotations$BayesDel_noAF_pred)
+
+roc_curve <- roc(bayesdel_annotations_miss$is_ctrl, bayesdel_annotations_miss$BayesDel_noAF_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+
+bayesdel_annotations_miss %>%
+  ggplot(aes(BayesDel_noAF_score)) +
+  labs(x = "BayesDel noAF Score") +
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+
+p3 <- bayesdel_annotations %>%
+  ggplot(aes(x = Consequence_simple, y = BayesDel_addAF_score)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  theme_minimal()
+
+nom_score = (bayesdel_annotations$BayesDel_addAF_score - min(bayesdel_annotations$BayesDel_addAF_score)) / (max(bayesdel_annotations$BayesDel_addAF_score) - min(bayesdel_annotations$BayesDel_addAF_score))
+
+
+
+
+```
+
+```{r CADD}
+CADD_annotations <- annotations %>%
+  filter(CADD_phred != "-") %>%
+  mutate(CADD_phred = as.numeric(CADD_phred),
+         CADD_raw = as.numeric(CADD_raw),
+         CADD_raw_rankscore = as.numeric(CADD_raw_rankscore)
+  )
+
+CADD_annotations_miss <- missense_annots %>%
+  filter(CADD_phred != "-") %>%
+  mutate(CADD_phred = as.numeric(CADD_phred),
+         CADD_raw = as.numeric(CADD_raw),
+         CADD_raw_rankscore = as.numeric(CADD_raw_rankscore)
+  )
+
+dim(CADD_annotations_miss)
+unique(CADD_annotations$Consequence_simple)
+table(CADD_annotations$Consequence_simple)
+
+CADD_annotations_miss %>%
+  ggplot(aes(CADD_raw)) +
+  labs(x = "CADD Score") +
+  geom_histogram(binwidth = 2, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 2, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+  # geom_vline(xintercept = 0.0692655) +
+  # facet_wrap( ~ Consequence_simple, nrow = 1) + theme(legend.position = "none")
+
+  
+nom_score = (CADD_annotations_miss$CADD_phred - min(CADD_annotations$CADD_phred)) / (max(CADD_annotations$CADD_phred) - min(CADD_annotations$CADD_phred))
+  
+roc_curve <- roc(CADD_annotations_miss$is_ctrl, CADD_annotations_miss$CADD_raw)
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+
+
+missense_annots_ctrl <- annotations %>%
+  filter(Consequence_simple == "missense_variant", is_ctrl == 1)
+
+missense_annots_ocdctd <- annotations %>%
+  filter(Consequence_simple == "missense_variant", is_ctrl == 0)
+
+pwr.2p2n.test(h=1.7,n1=22,n2=8,sig.level=0.05)
+
+length(setdiff(unique(missense_annots_ocdctd$SYMBOL), unique(missense_annots$SYMBOL)))
+
+```
+
+```{r ClinPred}
+clinpred_annotations <- annotations %>%
+  filter(ClinPred_pred != "-") %>%
+  mutate(ClinPred_score = as.numeric(ClinPred_score),
+         ClinPred_rankscore = as.numeric(ClinPred_rankscore)
+  )
+
+clinpred_annotations_miss <- missense_annots %>%
+  filter(ClinPred_pred != "-") %>%
+  mutate(ClinPred_score = as.numeric(ClinPred_score),
+         ClinPred_rankscore = as.numeric(ClinPred_rankscore)
+  )
+
+dim(clinpred_annotations_miss)
+unique(clinpred_annotations$Consequence_simple)
+table(clinpred_annotations$Consequence_simple)
+
+roc_curve <- roc(clinpred_annotations_miss$is_ctrl, clinpred_annotations_miss$ClinPred_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+clinpred_annotations_miss %>%
+  ggplot(aes(ClinPred_score)) +
+  labs(x = "ClinPred Score") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+
+clinpred_annotations %>%
+  ggplot(aes(x = is_ctrl, y = ClinPred_score)) +
+  geom_jitter(width = 0.1, size = 1, alpha = 0.5) +  # Jittered data points
+  ylim(0, 1) +
+  geom_hline(yintercept = .9)+
+  geom_hline(yintercept = .5)
+  # theme_minimal()
+
+
+clinpred_annotations_extreme <- clinpred_annotations %>%
+  filter(ClinPred_score > 0.55)
+
+```
+
+```{r DANN}
+DANN_annotations <- annotations %>%
+  filter(DANN_score != "-") %>%
+  mutate(DANN_score = as.numeric(DANN_score),
+         DANN_rankscore = as.numeric(DANN_rankscore)
+  )
+
+DANN_annotations_miss <- missense_annots %>%
+  filter(DANN_score != "-") %>%
+  mutate(DANN_score = as.numeric(DANN_score),
+         DANN_rankscore = as.numeric(DANN_rankscore)
+  )
+
+dim(DANN_annotations_miss)
+unique(DANN_annotations$Consequence_simple)
+table(DANN_annotations$Consequence_simple)
+
+roc_curve <- roc(DANN_annotations_miss$is_ctrl, DANN_annotations_miss$DANN_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+DANN_annotations_miss %>%
+  ggplot(aes(DANN_score)) +
+  labs(x = "DANN Score") +
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r DEOGEN2}
+deogen_annotations <- annotations %>%
+  filter(DEOGEN2_score != "-") %>%
+  mutate(DEOGEN2_score = as.numeric(DEOGEN2_score),
+         DEOGEN2_rankscore = as.numeric(DEOGEN2_rankscore)
+  )
+
+deogen_annotations_miss <- missense_annots %>%
+  filter(DEOGEN2_score != "-") %>%
+  mutate(DEOGEN2_score = as.numeric(DEOGEN2_score),
+         DEOGEN2_rankscore = as.numeric(DEOGEN2_rankscore)
+  )
+
+dim(deogen_annotations_miss)
+unique(deogen_annotations$Consequence_simple)
+table(deogen_annotations$Consequence_simple)
+
+roc_curve <- roc(deogen_annotations_miss$is_ctrl, deogen_annotations_miss$DEOGEN2_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+deogen_annotations_miss %>%
+  ggplot(aes(DEOGEN2_score)) +
+  labs(x = "DEOGEN2 Score") +
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r ESM1b}
+esm_annotations <- annotations %>%
+  filter(ESM1b_score != "-") %>%
+  mutate(ESM1b_score = as.numeric(ESM1b_score)
+  )
+
+esm_annotations_miss <- missense_annots %>%
+  filter(ESM1b_score != "-") %>%
+  mutate(ESM1b_score = as.numeric(ESM1b_score)
+  )
+
+dim(esm_annotations_miss)
+unique(esm_annotations$Consequence_simple)
+table(esm_annotations$Consequence_simple)
+
+roc_curve <- roc(esm_annotations_miss$is_ctrl, esm_annotations_miss$ESM1b_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+esm_annotations %>%
+  ggplot(aes(ESM1b_score)) +
+  labs(x = "ESM1b Score") +
+  geom_histogram(binwidth = 2, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 2, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r Eigen}
+eigen_annotations <- annotations %>%
+  filter(Eigen.raw_coding != "-") %>%
+  mutate(Eigen.raw_coding = as.numeric(Eigen.raw_coding),
+         Eigen.PC.phred_coding = as.numeric(Eigen.PC.phred_coding),
+         Eigen.phred_coding = as.numeric(Eigen.phred_coding),
+         Eigen.PC.raw_coding = as.numeric(Eigen.PC.raw_coding)
+  )
+
+eigen_annotations_miss <- missense_annots %>%
+  filter(Eigen.raw_coding != "-") %>%
+  mutate(Eigen.raw_coding = as.numeric(Eigen.raw_coding),
+         Eigen.PC.phred_coding = as.numeric(Eigen.PC.phred_coding),
+         Eigen.phred_coding = as.numeric(Eigen.phred_coding),
+         Eigen.PC.raw_coding = as.numeric(Eigen.PC.raw_coding)
+  )
+
+dim(eigen_annotations_miss)
+unique(eigen_annotations$Consequence_simple)
+table(eigen_annotations$Consequence_simple)
+
+roc_curve <- roc(eigen_annotations_miss$is_ctrl, eigen_annotations_miss$Eigen.PC.raw_coding)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+eigen_annotations_miss %>%
+  ggplot(aes(Eigen.PC.raw_coding)) +
+  labs(x = "Eigen PC Score") +
+  geom_histogram(binwidth = .25, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .25, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r GERP}
+gerp_annotations <- annotations %>%
+  filter(GERP.._RS != "-") %>%
+  mutate(GERP.._RS = as.numeric(GERP.._RS),
+         GERP.._NR = as.numeric(GERP.._NR)
+  )
+
+gerp_annotations_miss <- missense_annots %>%
+  filter(GERP.._RS != "-") %>%
+  mutate(GERP.._RS = as.numeric(GERP.._RS),
+         GERP.._NR = as.numeric(GERP.._NR)
+  )
+
+dim(gerp_annotations_miss)
+unique(gerp_annotations$Consequence_simple)
+table(gerp_annotations$Consequence_simple)
+
+gerpnr_roc <- roc(gerp_annotations_miss$is_ctrl, gerp_annotations_miss$GERP.._NR)
+gerprs_roc <- roc(gerp_annotations_miss$is_ctrl, gerp_annotations_miss$GERP.._RS)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+gerp_annotations_miss %>%
+  ggplot(aes(GERP.._NR)) +
+  labs(x = "GERP NR Score") +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r LIST}
+list_annotations <- annotations %>%
+  filter(LIST.S2_score != "-") %>%
+  mutate(LIST.S2_score = as.numeric(LIST.S2_score)
+  )
+
+list_annotations_miss <- missense_annots %>%
+  filter(LIST.S2_score != "-") %>%
+  mutate(LIST.S2_score = as.numeric(LIST.S2_score)
+  )
+
+dim(list_annotations_miss)
+unique(list_annotations$Consequence_simple)
+table(list_annotations$Consequence_simple)
+
+roc_curve <- roc(list_annotations_miss$is_ctrl, list_annotations_miss$LIST.S2_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+list_annotations_miss %>%
+  ggplot(aes(LIST.S2_score)) +
+  labs(x = "LIST Score") +
+  geom_histogram(binwidth = .25, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .25, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r M.CAP}
+mcap_annotations <- annotations %>%
+  filter(M.CAP_score != "-") %>%
+  mutate(M.CAP_score = as.numeric(M.CAP_score)
+  )
+
+mcap_annotations_miss <- missense_annots %>%
+  filter(M.CAP_score != "-") %>%
+  mutate(M.CAP_score = as.numeric(M.CAP_score)
+  )
+
+
+mcap_annotations %>%
+  mutate(transcript = str_split_i(Feature, pattern = "\\.", i = 1)) %>%
+  left_join(scores) %>%
+  ggplot(aes(M.CAP_score, lof.oe_ci.upper_bin_decile)) +
+  geom_point() +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+
+dim(mcap_annotations_miss)
+unique(mcap_annotations$Consequence_simple)
+table(mcap_annotations$Consequence_simple)
+
+mcap_roc <- roc(mcap_annotations_miss$is_ctrl, mcap_annotations_miss$M.CAP_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mcap_annotations_miss %>%
+  ggplot(aes(M.CAP_score)) +
+  labs(x = "M.CAP Score") +
+  geom_histogram(binwidth = .25, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .25, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r MVP}
+mvp_annotations <- annotations %>%
+  filter(MVP_score != "-") %>%
+  mutate(MVP_score = as.numeric(MVP_score)
+  )
+
+mvp_annotations_miss <- missense_annots %>%
+  filter(MVP_score != "-") %>%
+  mutate(MVP_score = as.numeric(MVP_score)
+  )
+
+dim(mvp_annotations_miss)
+unique(mvp_annotations$Consequence_simple)
+table(mvp_annotations$Consequence_simple)
+
+roc_curve <- roc(mvp_annotations_miss$is_ctrl, mvp_annotations_miss$MVP_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mvp_annotations_miss %>%
+  ggplot(aes(MVP_score)) +
+  labs(x = "MVP Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r metaLR}
+metaLR_annotations <- annotations %>%
+  filter(MetaLR_score != "-") %>%
+  mutate(MetaLR_score = as.numeric(MetaLR_score)
+  )
+
+metaLR_annotations_miss <- missense_annots %>%
+  filter(MetaLR_score != "-") %>%
+  mutate(MetaLR_score = as.numeric(MetaLR_score)
+  )
+
+dim(metaLR_annotations_miss)
+unique(metaLR_annotations$Consequence_simple)
+table(metaLR_annotations$Consequence_simple)
+
+roc_curve <- roc(metaLR_annotations_miss$is_ctrl, metaLR_annotations_miss$MetaLR_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+metaLR_annotations_miss %>%
+  ggplot(aes(MetaLR_score)) +
+  labs(x = "MetaLR Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r metaRNN}
+metaRNN_annotations <- annotations %>%
+  filter(MetaRNN_score != "-") %>%
+  mutate(MetaRNN_score = as.numeric(MetaRNN_score)
+  )
+
+metaRNN_annotations_miss <- missense_annots %>%
+  filter(MetaRNN_score != "-") %>%
+  mutate(MetaRNN_score = as.numeric(MetaRNN_score)
+  )
+
+dim(metaRNN_annotations_miss)
+unique(metaRNN_annotations$Consequence_simple)
+table(metaRNN_annotations$Consequence_simple)
+
+roc_curve <- roc(metaRNN_annotations_miss$is_ctrl, metaRNN_annotations_miss$MetaRNN_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+metaRNN_annotations_miss %>%
+  ggplot(aes(MetaRNN_score)) +
+  labs(x = "MetaRNN Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r metaSVM}
+metaSVM_annotations <- annotations %>%
+  filter(MetaSVM_score != "-") %>%
+  mutate(MetaSVM_score = as.numeric(MetaSVM_score)
+  )
+
+metaSVM_annotations_miss <- missense_annots %>%
+  filter(MetaSVM_score != "-") %>%
+  mutate(MetaSVM_score = as.numeric(MetaSVM_score)
+  )
+
+dim(metaSVM_annotations_miss)
+unique(metaSVM_annotations$Consequence_simple)
+table(metaSVM_annotations$Consequence_simple)
+
+roc_curve <- roc(metaSVM_annotations_miss$is_ctrl, metaSVM_annotations_miss$MetaSVM_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+metaSVM_annotations_miss %>%
+  ggplot(aes(MetaSVM_score)) +
+  labs(x = "MetaSVM Score") +
+  geom_histogram(binwidth = .25, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .25, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r MisFit}
+MisFit_annotations <- annotations %>%
+  filter(MisFit_D_score != "-") %>%
+  mutate(MisFit_D_score = as.numeric(MisFit_D_score),
+         MisFit_S_score = as.numeric(MisFit_S_score)
+  )
+
+MisFit_annotations_miss <- missense_annots %>%
+  filter(MisFit_D_score != "-") %>%
+  mutate(MisFit_D_score = as.numeric(MisFit_D_score),
+         MisFit_S_score = as.numeric(MisFit_S_score)
+  )
+
+dim(MisFit_annotations)
+unique(MisFit_annotations$Consequence_simple)
+table(MisFit_annotations$Consequence_simple)
+
+roc_curve <- roc(MisFit_annotations$is_ctrl, MisFit_annotations$MisFit_S_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+MisFit_annotations %>%
+  ggplot(aes(MisFit_S_score)) +
+  labs(x = "MisFit_S Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r mutformer}
+mutformer_annotations <- annotations %>%
+  filter(MutFormer_score != "-") %>%
+  mutate(MutFormer_score = as.numeric(MutFormer_score)
+  )
+
+mutformer_annotations_miss <- missense_annots %>%
+  filter(MutFormer_score != "-") %>%
+  mutate(MutFormer_score = as.numeric(MutFormer_score)
+  )
+
+dim(mutformer_annotations_miss)
+unique(mutformer_annotations$Consequence_simple)
+table(mutformer_annotations$Consequence_simple)
+
+roc_curve <- roc(mutformer_annotations_miss$is_ctrl, mutformer_annotations_miss$MutFormer_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mutformer_annotations_miss %>%
+  ggplot(aes(MutFormer_score)) +
+  labs(x = "MutFormer Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r mutpred2}
+mutpred2_annotations <- annotations %>%
+  filter(MutPred2_score != "-") %>%
+  mutate(MutPred2_score = as.numeric(MutPred2_score)
+  )
+
+mutpred2_annotations_miss <- missense_annots %>%
+  filter(MutPred2_score != "-") %>%
+  mutate(MutPred2_score = as.numeric(MutPred2_score)
+  )
+
+dim(mutpred2_annotations_miss)
+unique(mutpred2_annotations$Consequence_simple)
+table(mutpred2_annotations$Consequence_simple)
+
+roc_curve <- roc(mutpred2_annotations_miss$is_ctrl, mutpred2_annotations_miss$MutPred2_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mutpred2_annotations_miss %>%
+  ggplot(aes(MutPred2_score)) +
+  labs(x = "MutPred2 Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r mutscore}
+mutscore_annotations <- annotations %>%
+  filter(MutScore_score != "-") %>%
+  mutate(MutScore_score = as.numeric(MutScore_score)
+  )
+
+mutscore_annotations_miss <- missense_annots %>%
+  filter(MutScore_score != "-") %>%
+  mutate(MutScore_score = as.numeric(MutScore_score)
+  )
+
+dim(mutscore_annotations_miss)
+unique(mutscore_annotations$Consequence_simple)
+table(mutscore_annotations$Consequence_simple)
+
+roc_curve <- roc(mutscore_annotations_miss$is_ctrl, mutscore_annotations_miss$MutScore_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mutscore_annotations_miss %>%
+  ggplot(aes(MutScore_score)) +
+  labs(x = "MutScore Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r mutationaccessor}
+mutationaccessor_annotations <- annotations %>%
+  filter(MutationAssessor_score != "-") %>%
+  mutate(MutationAssessor_score = as.numeric(MutationAssessor_score)
+  )
+
+dim(mutationaccessor_annotations)
+unique(mutationaccessor_annotations$Consequence_simple)
+table(mutationaccessor_annotations$Consequence_simple)
+
+roc_curve <- roc(mutationaccessor_annotations$is_ctrl, mutationaccessor_annotations$MutationAssessor_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mutationaccessor_annotations %>%
+  ggplot(aes(MutationAssessor_score)) +
+  labs(x = "MutationAssessor Score") +
+  geom_histogram(binwidth = .5, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .5, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r mutationtaster}
+mutationtaster_annotations <- annotations %>%
+  filter(MutationTaster_trees_deleterious != "-") %>%
+  mutate(MutationTaster_trees_deleterious = as.numeric(MutationTaster_trees_deleterious)
+  )
+
+mutationtaster_annotations_miss <- missense_annots %>%
+  filter(MutationTaster_trees_deleterious != "-") %>%
+  mutate(MutationTaster_trees_deleterious = as.numeric(MutationTaster_trees_deleterious)
+  )
+
+dim(mutationtaster_annotations_miss)
+unique(mutationtaster_annotations$Consequence_simple)
+table(mutationtaster_annotations$Consequence_simple)
+
+roc_curve <- roc(mutationtaster_annotations_miss$is_ctrl, mutationtaster_annotations_miss$MutationTaster_trees_deleterious)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+mutationtaster_annotations_miss %>%
+  ggplot(aes(MutationTaster_trees_deleterious)) +
+  labs(x = "MutationTaster deleterious Score") +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 10, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r phact}
+phact_annotations <- annotations %>%
+  filter(PHACTboost_score != "-") %>%
+  mutate(PHACTboost_score = as.numeric(PHACTboost_score)
+  )
+
+phact_annotations_miss <- missense_annots %>%
+  filter(PHACTboost_score != "-") %>%
+  mutate(PHACTboost_score = as.numeric(PHACTboost_score)
+  )
+
+dim(phact_annotations_miss)
+unique(phact_annotations$Consequence_simple)
+table(phact_annotations$Consequence_simple)
+
+roc_curve <- roc(phact_annotations_miss$is_ctrl, phact_annotations_miss$PHACTboost_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+phact_annotations_miss %>%
+  ggplot(aes(PHACTboost_score)) +
+  labs(x = "PHACTboost Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r provean}
+provean_annotations <- annotations %>%
+  filter(PROVEAN_score != "-") %>%
+  mutate(PROVEAN_score = as.numeric(PROVEAN_score)
+  )
+
+provean_annotations_miss <- missense_annots %>%
+  filter(PROVEAN_score != "-") %>%
+  mutate(PROVEAN_score = as.numeric(PROVEAN_score)
+  )
+
+dim(provean_annotations)
+unique(provean_annotations$Consequence_simple)
+table(provean_annotations$Consequence_simple)
+
+roc_curve <- roc(provean_annotations_miss$is_ctrl, provean_annotations_miss$PROVEAN_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+provean_annotations_miss %>%
+  ggplot(aes(PROVEAN_score)) +
+  labs(x = "PROVEAN Score") +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r primateai}
+primateai_annotations <- annotations %>%
+  filter(PrimateAI_score != "-") %>%
+  mutate(PrimateAI_score = as.numeric(PrimateAI_score)
+  )
+
+dim(primateai_annotations)
+unique(primateai_annotations$Consequence_simple)
+table(primateai_annotations$Consequence_simple)
+
+roc_curve <- roc(primateai_annotations$is_ctrl, primateai_annotations$PrimateAI_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+primateai_annotations %>%
+  ggplot(aes(PrimateAI_score)) +
+  labs(x = "PrimateAI Score") +
+  geom_histogram(binwidth = .05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r REVEL}
+REVEL_annotations <- annotations %>%
+  filter(REVEL_score != "-") %>%
+  mutate(REVEL_score = as.numeric(REVEL_score)
+  )
+
+REVEL_annotations_miss <- missense_annots %>%
+  filter(REVEL_score != "-") %>%
+  mutate(REVEL_score = as.numeric(REVEL_score)
+  )
+
+dim(REVEL_annotations_miss)
+unique(REVEL_annotations$Consequence_simple)
+table(REVEL_annotations$Consequence_simple)
+
+roc_curve <- roc(REVEL_annotations_miss$is_ctrl, REVEL_annotations_miss$REVEL_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+REVEL_annotations_miss %>%
+  ggplot(aes(REVEL_score)) +
+  labs(x = "REVEL Score") +
+  geom_histogram(binwidth = .05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r SIFT}
+sift4g_annotations <- annotations %>%
+  filter(SIFT4G_pred != "-") %>%
+  mutate(SIFT4G_score = as.numeric(SIFT4G_score))
+
+sift_annotations <- annotations %>%
+  filter(SIFT_pred != "-") %>%
+  mutate(SIFT_score = as.numeric(SIFT_score))
+
+dim(sift4g_annotations)
+dim(sift_annotations)
+
+table(sift4g_annotations$Consequence_simple)
+table(sift_annotations$Consequence_simple)
+
+
+sift4g_annotations %>%
+  ggplot(aes(SIFT4G_score)) +
+  labs(x = "SIFT4G Score") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  geom_vline(xintercept = .3)+
+  geom_vline(xintercept = 0.775) +
+  facet_wrap(~is_ctrl, nrow = 1)
+
+sift4g_annotations %>%
+  ggplot(aes(x = SIFT4G_pred, y = SIFT4G_score)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  ylim(0, 1) +
+  geom_hline(yintercept = .95)+
+  geom_hline(yintercept = .1)+
+  facet_wrap(~is_ctrl, nrow = 1)
+  # theme_minimal()
+
+
+sift_annotations %>%
+  ggplot(aes(SIFT_score)) +
+  labs(x = "SIFT Score") +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 0.05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  geom_vline(xintercept = .3)+
+  geom_vline(xintercept = 0.775) +
+  facet_wrap(~is_ctrl, nrow = 1)
+
+sift_annotations %>%
+  ggplot(aes(x = SIFT_pred, y = SIFT_score)) +
+  geom_violin(alpha = 0.4, trim = FALSE) +  # Semi-transparent violin plot
+  geom_jitter(width = 0.2, size = 2, alpha = 0.8) +  # Jittered data points
+  ylim(0, 1) +
+  geom_hline(yintercept = .95)+
+  geom_hline(yintercept = .1)+
+  facet_wrap(~is_ctrl, nrow = 1)
+  # theme_minimal()
+
+
+roc_curve <- roc(sift_annotations$is_ctrl, sift_annotations$SIFT_score)
+
+roc_curve <- roc(sift4g_annotations$is_ctrl, sift4g_annotations$SIFT4G_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+
+
+
+```
+
+```{r VARITYer}
+VARITYer_annotations <- annotations %>%
+  filter(VARITY_ER_LOO_score != "-") %>%
+  mutate(VARITY_ER_LOO_score = as.numeric(VARITY_ER_LOO_score)
+  )
+
+VARITYer_annotations_miss <- missense_annots %>%
+  filter(VARITY_ER_LOO_score != "-") %>%
+  mutate(VARITY_ER_LOO_score = as.numeric(VARITY_ER_LOO_score)
+  )
+
+dim(VARITYer_annotations)
+unique(VARITYer_annotations$Consequence_simple)
+table(VARITYer_annotations$Consequence_simple)
+
+roc_curve <- roc(VARITYer_annotations_miss$is_ctrl, VARITYer_annotations_miss$VARITY_ER_LOO_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+VARITYer_annotations_miss %>%
+  ggplot(aes(VARITY_ER_LOO_score)) +
+  labs(x = "VARITY_ER Score") +
+  geom_histogram(binwidth = .05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r VARITYr}
+VARITYr_annotations <- annotations %>%
+  filter(VARITY_R_LOO_score != "-") %>%
+  mutate(VARITY_R_LOO_score = as.numeric(VARITY_R_LOO_score)
+  )
+
+VARITYr_annotations_miss <- missense_annots %>%
+  filter(VARITY_R_LOO_score != "-") %>%
+  mutate(VARITY_R_LOO_score = as.numeric(VARITY_R_LOO_score)
+  )
+
+dim(VARITYr_annotations_miss)
+unique(VARITYr_annotations$Consequence_simple)
+table(VARITYr_annotations$Consequence_simple)
+
+roc_curve <- roc(VARITYr_annotations_miss$is_ctrl, VARITYr_annotations_miss$VARITY_R_LOO_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+VARITYr_annotations_miss %>%
+  ggplot(aes(VARITY_R_LOO_score)) +
+  labs(x = "VARITY_R Score") +
+  geom_histogram(binwidth = .05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r VEST4}
+VEST4_annotations <- annotations %>%
+  filter(VEST4_score != "-") %>%
+  mutate(VEST4_score = as.numeric(VEST4_score)
+  )
+
+VEST4_annotations_miss <- missense_annots %>%
+  filter(VEST4_score != "-") %>%
+  mutate(VEST4_score = as.numeric(VEST4_score)
+  )
+
+dim(VEST4_annotations_miss)
+unique(VEST4_annotations$Consequence_simple)
+table(VEST4_annotations$Consequence_simple)
+
+roc_curve <- roc(VEST4_annotations_miss$is_ctrl, VEST4_annotations_miss$VEST4_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+VEST4_annotations_miss %>%
+  ggplot(aes(VEST4_score)) +
+  labs(x = "VEST4 Score") +
+  geom_histogram(binwidth = .05, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .05, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r bstat}
+bstat_annotations <- annotations %>%
+  filter(bStatistic != "-") %>%
+  mutate(bStatistic = as.numeric(bStatistic)
+  )
+
+bstat_annotations_miss <- missense_annots %>%
+  filter(bStatistic != "-") %>%
+  mutate(bStatistic = as.numeric(bStatistic)
+  )
+
+dim(bstat_annotations_miss)
+unique(bstat_annotations$Consequence_simple)
+table(bstat_annotations$Consequence_simple)
+
+roc_curve <- roc(bstat_annotations_miss$is_ctrl, bstat_annotations_miss$bStatistic)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+bstat_annotations_miss %>%
+  ggplot(aes(bStatistic)) +
+  labs(x = "bStatistic Score") +
+  geom_histogram(binwidth = 50, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = 50, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r fathmm}
+fathmm_annotations <- annotations %>%
+  filter(fathmm.XF_coding_score != "-") %>%
+  mutate(fathmm.XF_coding_score = as.numeric(fathmm.XF_coding_score)
+  )
+
+fathmm_annotations_miss <- missense_annots %>%
+  filter(fathmm.XF_coding_score != "-") %>%
+  mutate(fathmm.XF_coding_score = as.numeric(fathmm.XF_coding_score)
+  )
+
+dim(fathmm_annotations)
+unique(fathmm_annotations$Consequence_simple)
+table(fathmm_annotations$Consequence_simple)
+
+roc_curve <- roc(fathmm_annotations$is_ctrl, fathmm_annotations$fathmm.XF_coding_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+fathmm_annotations %>%
+  ggplot(aes(fathmm.XF_coding_score)) +
+  labs(x = "fathmm.XF Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r gMVP}
+gMVP_annotations <- annotations %>%
+  filter(gMVP_score != "-") %>%
+  mutate(gMVP_score = as.numeric(gMVP_score)
+  )
+
+gMVP_annotations_miss <- missense_annots %>%
+  filter(gMVP_score != "-") %>%
+  mutate(gMVP_score = as.numeric(gMVP_score)
+  )
+
+dim(gMVP_annotations)
+unique(gMVP_annotations$Consequence_simple)
+table(gMVP_annotations$Consequence_simple)
+
+roc_curve <- roc(gMVP_annotations_miss$is_ctrl, gMVP_annotations_miss$gMVP_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+gMVP_annotations_miss %>%
+  ggplot(aes(gMVP_score)) +
+  labs(x = "gMVP Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r phastCons17}
+phastCons17_annotations <- annotations %>%
+  filter(phastCons17way_primate != "-") %>%
+  mutate(phastCons470way_mammalian = as.numeric(phastCons470way_mammalian),
+         phastCons100way_vertebrate = as.numeric(phastCons100way_vertebrate),
+         phastCons17way_primate = as.numeric(phastCons17way_primate)
+  )
+
+phastCons17_annotations_miss <- missense_annots %>%
+  filter(phastCons17way_primate != "-") %>%
+  mutate(phastCons470way_mammalian = as.numeric(phastCons470way_mammalian),
+         phastCons100way_vertebrate = as.numeric(phastCons100way_vertebrate),
+         phastCons17way_primate = as.numeric(phastCons17way_primate)
+  )
+
+dim(phastCons17_annotations)
+unique(phastCons17_annotations$Consequence_simple)
+table(phastCons17_annotations$Consequence_simple)
+
+phast17 <- roc(phastCons17_annotations_miss$is_ctrl, phastCons17_annotations_miss$phastCons17way_primate)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+phastCons17_annotations_miss %>%
+  ggplot(aes(phastCons17way_primate)) +
+  labs(x = "phastCons17way_primate Score") +
+  geom_histogram(binwidth = .1, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .1, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r phyloP17}
+phyloP17_annotations <- annotations %>%
+  filter(phyloP17way_primate != "-") %>%
+  mutate(phyloP470way_mammalian = as.numeric(phyloP470way_mammalian),
+         phyloP100way_vertebrate = as.numeric(phyloP100way_vertebrate),
+         phyloP17way_primate = as.numeric(phyloP17way_primate)
+  )
+
+phyloP17_annotations_miss <- missense_annots %>%
+  filter(phyloP17way_primate != "-") %>%
+  mutate(phyloP470way_mammalian = as.numeric(phyloP470way_mammalian),
+         phyloP100way_vertebrate = as.numeric(phyloP100way_vertebrate),
+         phyloP17way_primate = as.numeric(phyloP17way_primate)
+  )
+
+dim(phyloP17_annotations)
+unique(phyloP17_annotations$Consequence_simple)
+table(phyloP17_annotations$Consequence_simple)
+
+phyloP_roc <- roc(phyloP17_annotations_miss$is_ctrl, phyloP17_annotations_miss$phyloP17way_primate)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+phyloP17_annotations_miss %>%
+  ggplot(aes(phyloP17way_primate)) +
+  labs(x = "phyloP17way_primate Score") +
+  geom_histogram(binwidth = .5, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .5, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```
+
+```{r popEVE}
+popEVE_annotations <- annotations %>%
+  filter(popEVE_score != "-") %>%
+  mutate(popEVE_score = as.numeric(popEVE_score)
+  )
+
+popEVE_annotations_miss <- missense_annots %>%
+  filter(popEVE_score != "-") %>%
+  mutate(popEVE_score = as.numeric(popEVE_score)
+  )
+
+dim(popEVE_annotations)
+unique(popEVE_annotations$Consequence_simple)
+table(popEVE_annotations$Consequence_simple)
+
+roc_curve <- roc(popEVE_annotations_miss$is_ctrl, popEVE_annotations_miss$popEVE_score)
+
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+
+phyloP17_annotations_miss %>%
+  ggplot(aes(phyloP17way_primate)) +
+  labs(x = "phyloP17way_primate Score") +
+  geom_histogram(binwidth = .5, fill = "steelblue", color = "white") +
+  stat_bin(
+    binwidth = .5, 
+    geom = "text", 
+    aes(
+      label = ifelse(after_stat(count) > 0, after_stat(count), "")
+    ), 
+    vjust = -1
+  ) +
+  facet_wrap(~is_ctrl, nrow = 1, labeller = as_labeller(new_labels))
+```

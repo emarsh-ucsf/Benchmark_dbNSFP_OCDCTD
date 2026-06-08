@@ -1,0 +1,2093 @@
+---
+title: "MNT09.3_NetColoc-burdenAcrossThresholds"
+author: "Matt N Tran"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Burden testing with PCNet (NetColoc-propagated) rOCDCTD network
+
+Burden tests across the hcOCDCTD36 NetColoc-progagated network (based on PCNet v2.2, co-citation free, NDEx accession no. `insert_no`) to assess whether the network, itself, has increased genetic burden for disease status
+
+Testing iterations with and without the seed 36 genes
+
+- With the seed, would hope that compared to the computed genetic burden IN the 36 genes, themselves, burden might increase
+
+- Without the seed, if there is still signal, this is alternatively evidence that NetColoc-propagated network genes might capture biological signal.
+
+### Set up
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(igraph)
+library(purrr)
+library(readxl)
+```
+
+Load variant tables used for full analysis for paper
+
+```{r}
+
+## Read in constraint metrics from gnomAD v4.1
+cons = fread("./gnomad.v4.1.constraint_ocdPh1_dnVar_rareVar.tsv")
+
+```
+
+### Re-create pedstat incorporating NetColoc at different Z-thresholds
+
+```{r}
+## Read in fam data
+fams <- read_excel("20260121_OCDCTD_tables.xlsx", sheet = "S2 - Families")
+
+fams <- fams %>%
+  filter(fam_analysis_group == "burden_and_tada") %>%
+  select(fam_analysis_group:OCDCTDgroup)
+
+dim(fams)
+
+fams2 = fams %>% 
+  mutate(cohortOCD = case_when(is_OCD==1 ~ "OCD",
+                               is_ctrl ==1 ~ "SSC",
+                               TRUE ~ NA),
+         cohortCTD = case_when(is_CTD==1 ~ "CTD",
+                               is_ctrl ==1 ~ "SSC",
+                               TRUE ~ NA),
+         cohortOCDCTD = case_when(is_CTD==1 | is_OCD==1 ~ "OCDCTD",
+                                 is_ctrl==1 ~ "SSC",
+                                 TRUE ~ NA),
+         cohortOCDwCTD = case_when(is_CTD==1 & is_OCD==1 ~ "OCDwCTD",
+                                 is_ctrl==1 ~ "SSC",
+                                 TRUE ~ NA),
+         cohortOCDonly = case_when(OCDCTDgroup == "OCDonly" ~ "OCDonly",
+                                 is_ctrl==1 ~ "SSC",
+                                 TRUE ~ NA),
+         cohortCTDonly = case_when(OCDCTDgroup == "CTDonly" ~ "CTDonly",
+                                 is_ctrl==1 ~ "SSC",
+                                 TRUE ~ NA)
+         )
+    # 4,136 = the final sample QC-passed fams in our trio-based de novo analysis
+
+## === Function to generate trio-level burden stats ===
+
+ped = fams2
+dns = annotations
+f_cons = cons
+
+#generate summary stats for a variety of variant annotations
+dns_stats0 = dns %>% group_by(id_external) %>% 
+  summarise(totaldnVar = n(), .groups = "drop") 
+
+dns_stats1 = dns %>% 
+  group_by(id_external, Consequence_simple) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>% replace(is.na(.), 0) %>%
+  mutate(lgd = frameshift_variant+stop_gained+splice_donor_variant+splice_acceptor_variant) %>%
+  mutate(ptv = frameshift_variant+stop_gained,
+         inframe_indel = inframe_deletion+inframe_insertion)
+  
+
+dns = dns %>%
+  mutate(vep.Feature = str_split_i(Feature, pattern = "\\.", i = 1))
+
+
+#LGD: pLI>=0.9, pLI <0.9
+dns_stats2 = dns %>%
+  filter(Consequence_simple %in% c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant")) %>%
+  mutate(Consequence_simple = case_when(
+    vep.Feature %in% f_cons[f_cons$lof.pLI>=0.9,]$transcript ~ "lgd_pLI_ge_0.9",
+    vep.Feature %in% f_cons[f_cons$lof.pLI<0.9,]$transcript ~ "lgd_pLI_lt_0.9",
+    TRUE ~ 'other'
+  )) %>% filter(Consequence_simple != 'other') %>% 
+  group_by(id_external, Consequence_simple) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>% replace(is.na(.), 0)
+
+
+#LGD: pLI>=0.5, pLI<0.5
+dns_stats22 = dns %>%
+  filter(Consequence_simple %in% c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant")) %>%
+  mutate(Consequence_simple = case_when(
+    vep.Feature %in% f_cons[f_cons$lof.pLI>=0.5,]$transcript ~ "lgd_pLI_ge_0.5",
+    vep.Feature %in% f_cons[f_cons$lof.pLI<0.5,]$transcript ~ "lgd_pLI_lt_0.5",
+    TRUE ~ 'other'
+  )) %>% filter(Consequence_simple != 'other') %>% 
+  group_by(id_external, Consequence_simple) %>% 
+  summarise(n = n(), .groups = "drop") %>% 
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>% replace(is.na(.), 0)
+
+
+#LGD: LOEUF deciles 0-40, 40-100
+dns_stats23 = dns %>%
+  filter(Consequence_simple %in% c("frameshift_variant", "stop_gained", "splice_donor_variant", "splice_acceptor_variant")) %>%
+  mutate(Consequence_simple = case_when(
+    vep.Feature %in% f_cons$transcript[f_cons$lof.oe_ci.upper_bin_decile %in% c(0:3)] ~ "lgd_loeuf_0_40",
+    vep.Feature %in% f_cons$transcript[f_cons$lof.oe_ci.upper_bin_decile %in% c(4:9)] ~ "lgd_loeuf_40_100",
+    TRUE ~ 'loeuf_other'
+  )) %>%
+  group_by(id_external, Consequence_simple) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>% replace(is.na(.), 0)
+
+#AlphaMissense Score Split
+dns_stats3 = dns %>%
+  #restrict to missense with AlphaMissense scores
+  filter(Consequence_simple == 'missense_variant' & !is.na(AlphaMissense_patho_class)) %>%
+  mutate(Consequence_simple = case_when(
+    AlphaMissense_score > 0.775 ~ "Alpha_Patho",
+    AlphaMissense_score < 0.3 ~ "Alpha_Benign",
+    TRUE ~ "Alpha_Mid"
+  )) %>%
+  group_by(id_external, Consequence_simple) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>%
+  replace(is.na(.), 0)
+
+#ClinPred Score Split
+dns_stats32 = dns %>%
+  #restrict to missense with AlphaMissense scores
+  filter(Consequence_simple == 'missense_variant' & Polyphen2_HDIV_pred != "-") %>%
+  mutate(Polyphen2_HDIV_rankscore = as.numeric(Polyphen2_HDIV_rankscore),
+         Polyphen2_HDIV_score = as.numeric(Polyphen2_HDIV_score),
+         Polyphen2_HVAR_pred = as.numeric(Polyphen2_HVAR_rankscore),
+         Polyphen2_HVAR_score = as.numeric(Polyphen2_HVAR_score)
+  ) %>%
+  filter(Polyphen2_HDIV_score > 0.25) %>%
+  mutate(Consequence_simple = case_when(
+    ClinPred_score >= 0.9 ~ "ClinPred_Patho",
+    ClinPred_score < 0.9  & ClinPred_score >= 0.5 ~ "ClinPred_lowPatho",
+    ClinPred_score < 0.5  & ClinPred_score >= 0.25 ~ "ClinPred_highbenign",
+    ClinPred_score < 0.25 ~ "ClinPred_Benign",
+    TRUE ~ "ClinPred_Mid"
+  )) %>%
+  group_by(id_external, Consequence_simple) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>%
+  replace(is.na(.), 0)
+
+#MPC Score Split
+dns_stats33 = dns %>%
+  #restrict to missense with AlphaMissense scores
+  filter(Consequence_simple == 'missense_variant' & !is.na(MPC_score)) %>%
+  mutate(Consequence_simple = case_when(
+    MPC_score >= 2 ~ "mpcMis3",
+    MPC_score < 2 & MPC_score >= 1 ~ "mpcMis2",
+    TRUE ~ "mpcMis1"
+  )) %>%
+  group_by(id_external, Consequence_simple) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>%
+  replace(is.na(.), 0)
+
+#Polyphen 
+dns_stats34 = dns %>%
+  #restrict to missense with AlphaMissense scores
+  filter(Consequence_simple == 'missense_variant' & Polyphen2_HDIV_pred != "-") %>%
+  mutate(Polyphen2_HDIV_rankscore = as.numeric(Polyphen2_HDIV_rankscore),
+         Polyphen2_HDIV_score = as.numeric(Polyphen2_HDIV_score),
+         Polyphen2_HVAR_pred = as.numeric(Polyphen2_HVAR_rankscore),
+         Polyphen2_HVAR_score = as.numeric(Polyphen2_HVAR_score)
+  ) %>%
+  mutate(Consequence_simple = case_when(
+    Polyphen2_HDIV_pred == "P" ~ "Mis2",
+    Polyphen2_HDIV_pred == "D" ~ "Mis3",
+    TRUE ~ "Mis1"
+  )) %>%
+  group_by(id_external, Consequence_simple) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = Consequence_simple, values_from = n) %>%
+  replace(is.na(.), 0)
+
+pedstat = ped %>%
+  left_join(dns_stats0, by = "id_external") %>%
+  left_join(dns_stats1, by = "id_external") %>%
+  left_join(dns_stats2, by = "id_external") %>%
+  left_join(dns_stats22, by = "id_external") %>%
+  left_join(dns_stats23, by = "id_external") %>%
+  left_join(dns_stats3, by = "id_external") %>%
+  left_join(dns_stats32, by = "id_external") %>%
+  left_join(dns_stats33, by = "id_external") %>%
+  left_join(dns_stats34, by = "id_external") %>%
+  mutate_if(is.numeric, ~replace_na(., 0))
+
+```
+
+```{r}
+
+# ldg
+dns_lgd <- dns %>%
+    filter(Consequence_simple %in% c("frameshift_variant", "stop_gained",
+                                     "splice_donor_variant", "splice_acceptor_variant"))
+
+for (i in 9:0) {
+  column_name = sprintf("lgd_loeuf_0_%d", i)
+  dns_lgd <- dns_lgd %>%
+    mutate(!!column_name := as.numeric(vep.Feature %in% f_cons$transcript[f_cons$lof.oe_ci.upper_bin_decile %in% c(0:i)]))
+}
+
+dns_lgd <- dns_lgd %>%
+  select(id_external, lgd_loeuf_0_9:lgd_loeuf_0_0)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+dns <- dns %>%
+  filter(Consequence_simple == "missense_variant")
+
+
+
+# MPC
+dns_mpc <- dns %>%
+  filter(Consequence_simple == "missense_variant", !is.na(MPC_score))
+
+dim(dns_mpc)
+range(dns_mpc$MPC_score)
+
+for (i in seq(0, 3.5, by = 0.1)) {
+  column_name = sprintf("mpc_thresh_%f", i)
+  dns_mpc <- dns_mpc %>%
+    mutate(!!column_name := as.numeric(MPC_score >= i))
+}
+dns_mpc <- dns_mpc %>%
+  select(id_external, mpc_thresh_0.000000:mpc_thresh_3.500000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+# Polyphen
+dns_polyphen <- dns %>%
+  filter(Consequence_simple == "missense_variant") %>%
+  filter(Polyphen2_HDIV_pred != "-") %>%
+  mutate(Polyphen2_HDIV_score = as.numeric(Polyphen2_HDIV_score),
+         Polyphen2_HVAR_score = as.numeric(Polyphen2_HVAR_score)
+  )
+
+dim(dns_polyphen)
+range(dns_polyphen$Polyphen2_HVAR_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("polyphenHDIV_thresh_%f", i)
+  dns_polyphen <- dns_polyphen %>%
+    mutate(!!column_name := as.numeric(Polyphen2_HDIV_score >= i))
+}
+dns_polyphen_hdiv <- dns_polyphen %>%
+  select(id_external, polyphenHDIV_thresh_0.000000:polyphenHDIV_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("polyphenHVAR_thresh_%f", i)
+  dns_polyphen <- dns_polyphen %>%
+    mutate(!!column_name := as.numeric(Polyphen2_HDIV_score >= i))
+}
+dns_polyphen_var <- dns_polyphen %>%
+  select(id_external, polyphenHVAR_thresh_0.000000:polyphenHVAR_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+
+# Alphamissense
+dns_alphamissense <- dns %>%
+  filter(Consequence_simple == "missense_variant", !is.na(AlphaMissense_score))
+
+range(dns_alphamissense$AlphaMissense_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("alphamissense_thresh_%f", i)
+  dns_alphamissense <- dns_alphamissense %>%
+    mutate(!!column_name := as.numeric(AlphaMissense_score >= i))
+}
+dns_alphamissense <- dns_alphamissense %>%
+  select(id_external, alphamissense_thresh_0.000000:alphamissense_thresh_1.000000) %>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# BayesDel
+dns_bayesdel <- dns %>%
+  filter(Consequence_simple == "missense_variant", BayesDel_addAF_pred != "-") %>%
+  mutate(BayesDel_addAF_score = as.numeric(BayesDel_addAF_score),
+         BayesDel_noAF_score = as.numeric(BayesDel_noAF_score)
+  )
+
+range(dns_bayesdel$BayesDel_addAF_score)
+range(dns_bayesdel$BayesDel_noAF_score)
+
+for (i in seq(-0.70, 0.6, by = 0.05)) {
+  column_name = sprintf("BayesDeladdAF_thresh_%f", i)
+  dns_bayesdel <- dns_bayesdel %>%
+    mutate(!!column_name := as.numeric(BayesDel_addAF_score >= i))
+}
+dns_bayesdel_addAF <- dns_bayesdel %>%
+  select(id_external, "BayesDeladdAF_thresh_-0.700000":BayesDeladdAF_thresh_0.600000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+for (i in seq(-1.1, 0.65, by = 0.05)) {
+  column_name = sprintf("BayesDelnoAF_thresh_%f", i)
+  dns_bayesdel <- dns_bayesdel %>%
+    mutate(!!column_name := as.numeric(BayesDel_noAF_score >= i))
+}
+dns_bayesdel_noAF <- dns_bayesdel %>%
+  select(id_external, "BayesDelnoAF_thresh_-1.100000":BayesDelnoAF_thresh_0.650000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+# CADD
+dns_CADD <- dns %>%
+  filter(CADD_phred != "-", Consequence_simple == "missense_variant") %>%
+  mutate(CADD_phred = as.numeric(CADD_phred),
+         CADD_raw = as.numeric(CADD_raw),
+         CADD_raw_rankscore = as.numeric(CADD_raw_rankscore)
+  )
+
+range(dns_CADD$CADD_raw)
+
+for (i in seq(-2.5, 9, by = 0.25)) {
+  column_name = sprintf("CADD_raw_thresh_%f", i)
+  dns_CADD <- dns_CADD %>%
+    mutate(!!column_name := as.numeric(CADD_raw >= i))
+}
+dns_CADD <- dns_CADD %>%
+  select(id_external, "CADD_raw_thresh_-2.500000":CADD_raw_thresh_9.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# ClinPred
+dns_clinpred <- dns %>%
+  filter(ClinPred_pred != "-", Consequence_simple == "missense_variant") %>%
+  mutate(ClinPred_score = as.numeric(ClinPred_score),
+         ClinPred_rankscore = as.numeric(ClinPred_rankscore)
+  )
+
+range(dns_clinpred$ClinPred_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("clinpred_thresh_%f", i)
+  dns_clinpred <- dns_clinpred %>%
+    mutate(!!column_name := as.numeric(ClinPred_score >= i))
+}
+dns_clinpred <- dns_clinpred %>%
+  select(id_external, "clinpred_thresh_0.000000":clinpred_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# DANN
+dns_DANN <- dns %>%
+  filter(DANN_score != "-", Consequence_simple == "missense_variant") %>%
+  mutate(DANN_score = as.numeric(DANN_score),
+         DANN_score = as.numeric(DANN_score)
+  )
+
+dim(dns_DANN)
+range(dns_DANN$DANN_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("dann_thresh_%f", i)
+  dns_DANN <- dns_DANN %>%
+    mutate(!!column_name := as.numeric(DANN_score >= i))
+}
+dns_DANN <- dns_DANN %>%
+  select(id_external, "dann_thresh_0.000000":dann_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#DEOGEN2
+dns_deogen2 <- dns %>%
+filter(DEOGEN2_score != "-", Consequence_simple == "missense_variant") %>%
+  mutate(DEOGEN2_score = as.numeric(DEOGEN2_score)
+  )
+
+dim(dns_deogen2)
+range(dns_deogen2$DEOGEN2_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("deogen_thresh_%f", i)
+  dns_deogen2 <- dns_deogen2 %>%
+    mutate(!!column_name := as.numeric(DEOGEN2_score >= i))
+}
+dns_deogen2 <- dns_deogen2 %>%
+  select(id_external, "deogen_thresh_0.000000":deogen_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#ESM
+dns_esm <- dns %>%
+filter(ESM1b_score != "-") %>%
+  mutate(ESM1b_score = as.numeric(ESM1b_score)
+  )
+
+dim(dns_esm)
+range(dns_esm$ESM1b_score)
+
+for (i in seq(4, -22, by = -1)) {
+  column_name = sprintf("esm_thresh_%f", i)
+  dns_esm <- dns_esm %>%
+    mutate(!!column_name := as.numeric(ESM1b_score <= i))
+}
+dns_esm <- dns_esm %>%
+  select(id_external, "esm_thresh_4.000000":"esm_thresh_-22.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#Eigen
+dns_eigen <- dns %>%
+filter(Eigen.PC.raw_coding != "-") %>%
+  mutate(Eigen.PC.raw_coding = as.numeric(Eigen.PC.raw_coding)
+  )
+
+dim(dns_eigen)
+range(dns_eigen$Eigen.PC.raw_coding)
+
+for (i in seq(-2.7, 1.1, by = .1)) {
+  column_name = sprintf("eigen_thresh_%f", i)
+  dns_eigen <- dns_eigen %>%
+    mutate(!!column_name := as.numeric(Eigen.PC.raw_coding >= i))
+}
+dns_eigen <- dns_eigen %>%
+  select(id_external, "eigen_thresh_-2.700000":"eigen_thresh_1.100000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#GERPrs
+dns_GERPrs <- dns %>%
+filter(GERP.._RS != "-") %>%
+  mutate(GERP.._RS = as.numeric(GERP.._RS)
+  )
+
+dim(dns_GERPrs)
+range(dns_GERPrs$GERP.._RS)
+
+for (i in seq(-12.1, 6.1, by = .5)) {
+  column_name = sprintf("GERPrs_thresh_%f", i)
+  dns_GERPrs <- dns_GERPrs %>%
+    mutate(!!column_name := as.numeric(GERP.._RS >= i))
+}
+dns_GERPrs <- dns_GERPrs %>%
+  select(id_external, "GERPrs_thresh_-12.100000":"GERPrs_thresh_5.900000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#GERPnr
+dns_GERPnr <- dns %>%
+filter(GERP.._NR != "-") %>%
+  mutate(GERP.._NR = as.numeric(GERP.._NR)
+  )
+
+dim(dns_GERPnr)
+range(dns_GERPnr$GERP.._NR)
+
+for (i in seq(0.1, 6.1, by = .1)) {
+  column_name = sprintf("GERPnr_thresh_%f", i)
+  dns_GERPnr <- dns_GERPnr %>%
+    mutate(!!column_name := as.numeric(GERP.._NR >= i))
+}
+dns_GERPnr <- dns_GERPnr %>%
+  select(id_external, "GERPnr_thresh_0.100000":"GERPnr_thresh_6.100000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#LIST
+dns_LIST <- dns %>%
+  filter(LIST.S2_score != "-") %>%
+  mutate(LIST.S2_score = as.numeric(LIST.S2_score)
+  )
+
+dim(dns_LIST)
+range(dns_LIST$LIST.S2_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("LIST_thresh_%f", i)
+  dns_LIST <- dns_LIST %>%
+    mutate(!!column_name := as.numeric(GERP.._NR >= i))
+}
+dns_LIST <- dns_LIST %>%
+  select(id_external, "LIST_thresh_0.000000":"LIST_thresh_1.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+#M.CAP
+dns_mcap <- dns %>%
+filter(M.CAP_score != "-") %>%
+  mutate(M.CAP_score = as.numeric(M.CAP_score)
+  )
+
+dim(dns_mcap)
+range(dns_mcap$M.CAP_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("mcap_thresh_%f", i)
+  dns_mcap <- dns_mcap %>%
+    mutate(!!column_name := as.numeric(M.CAP_score >= i))
+}
+dns_mcap <- dns_mcap %>%
+  select(id_external, "mcap_thresh_0.000000":"mcap_thresh_1.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MVP
+dns_MVP <- dns %>%
+  filter(MVP_score != "-") %>%
+  mutate(MVP_score = as.numeric(MVP_score)
+  )
+
+dim(dns_MVP)
+range(dns_MVP$MVP_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("mvp_thresh_%f", i)
+  dns_MVP <- dns_MVP %>%
+    mutate(!!column_name := as.numeric(MVP_score >= i))
+}
+dns_MVP <- dns_MVP %>%
+  select(id_external, "mvp_thresh_0.000000":mvp_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MetaLR
+dns_MetaLR <- dns %>%
+  filter(MetaLR_score != "-") %>%
+  mutate(MetaLR_score = as.numeric(MetaLR_score)
+  )
+
+dim(dns_MetaLR)
+range(dns_MetaLR$MetaLR_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("metalr_thresh_%f", i)
+  dns_MetaLR <- dns_MetaLR %>%
+    mutate(!!column_name := as.numeric(MetaLR_score >= i))
+}
+dns_MetaLR <- dns_MetaLR %>%
+  select(id_external, "metalr_thresh_0.000000":metalr_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MetaRNN
+dns_MetaRNN <- dns %>%
+  filter(MetaRNN_score != "-") %>%
+  mutate(MetaRNN_score = as.numeric(MetaRNN_score)
+  )
+
+dim(dns_MetaRNN)
+range(dns_MetaRNN$MetaRNN_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("metarnn_thresh_%f", i)
+  dns_MetaRNN <- dns_MetaRNN %>%
+    mutate(!!column_name := as.numeric(MetaRNN_score >= i))
+}
+dns_MetaRNN <- dns_MetaRNN %>%
+  select(id_external, "metarnn_thresh_0.000000":metarnn_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MetaSVM
+dns_MetaSVM <- dns %>%
+  filter(MetaSVM_score != "-") %>%
+  mutate(MetaSVM_score = as.numeric(MetaSVM_score)
+  )
+
+dim(dns_MetaSVM)
+range(dns_MetaSVM$MetaSVM_score)
+
+for (i in seq(-1.3, 1.4, by = 0.1)) {
+  column_name = sprintf("metasvm_thresh_%f", i)
+  dns_MetaSVM <- dns_MetaSVM %>%
+    mutate(!!column_name := as.numeric(MetaSVM_score >= i))
+}
+dns_MetaSVM <- dns_MetaSVM %>%
+  select(id_external, "metasvm_thresh_-1.300000":metasvm_thresh_1.400000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MisFitD
+dns_MisFitD <- dns %>%
+  filter(MisFit_D_score != "-") %>%
+  mutate(MisFit_D_score = as.numeric(MisFit_D_score)
+  )
+
+dim(dns_MisFitD)
+range(dns_MisFitD$MisFit_D_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("MisFitD_thresh_%f", i)
+  dns_MisFitD <- dns_MisFitD %>%
+    mutate(!!column_name := as.numeric(MisFit_D_score >= i))
+}
+dns_MisFitD <- dns_MisFitD %>%
+  select(id_external, "MisFitD_thresh_0.000000":MisFitD_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MisFitS
+dns_MisFitS <- dns %>%
+  filter(MisFit_S_score != "-") %>%
+  mutate(MisFit_S_score = as.numeric(MisFit_S_score)
+  )
+
+dim(dns_MisFitS)
+range(dns_MisFitS$MisFit_S_score)
+
+for (i in seq(0, 0.5, by = 0.05)) {
+  column_name = sprintf("MisFitS_thresh_%f", i)
+  dns_MisFitS <- dns_MisFitS %>%
+    mutate(!!column_name := as.numeric(MisFit_S_score >= i))
+}
+dns_MisFitS <- dns_MisFitS %>%
+  select(id_external, "MisFitS_thresh_0.000000":MisFitS_thresh_0.500000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MutFormer
+dns_MutFormer <- dns %>%
+  filter(MutFormer_score != "-") %>%
+  mutate(MutFormer_score = as.numeric(MutFormer_score)
+  )
+
+dim(dns_MutFormer)
+range(dns_MutFormer$MutFormer_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("MutFormer_thresh_%f", i)
+  dns_MutFormer <- dns_MutFormer %>%
+    mutate(!!column_name := as.numeric(MutFormer_score >= i))
+}
+dns_MutFormer <- dns_MutFormer %>%
+  select(id_external, "MutFormer_thresh_0.000000":MutFormer_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MutPred2
+dns_MutPred2 <- dns %>%
+  filter(MutPred2_score != "-") %>%
+  mutate(MutPred2_score = as.numeric(MutPred2_score)
+  )
+
+dim(dns_MutPred2)
+range(dns_MutPred2$MutPred2_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("MutPred2_thresh_%f", i)
+  dns_MutPred2 <- dns_MutPred2 %>%
+    mutate(!!column_name := as.numeric(MutPred2_score >= i))
+}
+dns_MutPred2 <- dns_MutPred2 %>%
+  select(id_external, "MutPred2_thresh_0.000000":MutPred2_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MutScore
+dns_MutScore <- dns %>%
+  filter(MutScore_score != "-") %>%
+  mutate(MutScore_score = as.numeric(MutScore_score)
+  )
+
+dim(dns_MutScore)
+range(dns_MutScore$MutScore_score)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("MutScore_thresh_%f", i)
+  dns_MutScore <- dns_MutScore %>%
+    mutate(!!column_name := as.numeric(MutScore_score >= i))
+}
+dns_MutScore <- dns_MutScore %>%
+  select(id_external, "MutScore_thresh_0.000000":MutScore_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MutationAssessor
+dns_MutationAssessor <- dns %>%
+  filter(MutationAssessor_score != "-") %>%
+  mutate(MutationAssessor_score = as.numeric(MutationAssessor_score)
+  )
+
+dim(dns_MutationAssessor)
+range(dns_MutationAssessor$MutationAssessor_score)
+
+for (i in seq(-2.9, 5, by = 0.1)) {
+  column_name = sprintf("MutationAssessor_thresh_%f", i)
+  dns_MutationAssessor <- dns_MutationAssessor %>%
+    mutate(!!column_name := as.numeric(MutationAssessor_score >= i))
+}
+dns_MutationAssessor <- dns_MutationAssessor %>%
+  select(id_external, "MutationAssessor_thresh_-2.900000":MutationAssessor_thresh_5.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# MutationTaster
+dns_MutationTaster <- dns %>%
+  filter(MutationTaster_trees_deleterious != "-") %>%
+  mutate(MutationTaster_trees_deleterious = as.numeric(MutationTaster_trees_deleterious)
+  )
+
+dim(dns_MutationTaster)
+range(dns_MutationTaster$MutationTaster_trees_deleterious)
+
+for (i in seq(0, 100, by = 5)) {
+  column_name = sprintf("MutationTaster_thresh_%f", i)
+  dns_MutationTaster <- dns_MutationTaster %>%
+    mutate(!!column_name := as.numeric(MutationTaster_trees_deleterious >= i))
+}
+dns_MutationTaster <- dns_MutationTaster %>%
+  select(id_external, "MutationTaster_thresh_0.000000":MutationTaster_thresh_100.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# PHACTboost
+dns_PHACTboost <- dns %>%
+  filter(PHACTboost_score != "-") %>%
+  mutate(PHACTboost_score = as.numeric(PHACTboost_score)
+  )
+
+dim(dns_PHACTboost)
+range(dns_PHACTboost$PHACTboost_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("PHACTboost_thresh_%f", i)
+  dns_PHACTboost <- dns_PHACTboost %>%
+    mutate(!!column_name := as.numeric(PHACTboost_score >= i))
+}
+dns_PHACTboost <- dns_PHACTboost %>%
+  select(id_external, "PHACTboost_thresh_0.000000":PHACTboost_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# PROVEAN
+dns_PROVEAN <- dns %>%
+  filter(PROVEAN_score != "-") %>%
+  mutate(PROVEAN_score = as.numeric(PROVEAN_score)
+  )
+
+dim(dns_PROVEAN)
+range(dns_PROVEAN$PROVEAN_score)
+
+for (i in seq(6, -13, by = -.5)) {
+  column_name = sprintf("PROVEAN_thresh_%f", i)
+  dns_PROVEAN <- dns_PROVEAN %>%
+    mutate(!!column_name := as.numeric(PROVEAN_score <= i))
+}
+dns_PROVEAN <- dns_PROVEAN %>%
+  select(id_external, "PROVEAN_thresh_6.000000":"PROVEAN_thresh_-13.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# PrimateAI
+dns_PrimateAI <- dns %>%
+  filter(PrimateAI_score != "-") %>%
+  mutate(PrimateAI_score = as.numeric(PrimateAI_score)
+  )
+
+dim(dns_PrimateAI)
+range(dns_PrimateAI$PrimateAI_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("PrimateAI_thresh_%f", i)
+  dns_PrimateAI <- dns_PrimateAI %>%
+    mutate(!!column_name := as.numeric(PrimateAI_score >= i))
+}
+dns_PrimateAI <- dns_PrimateAI %>%
+  select(id_external, "PrimateAI_thresh_0.000000":PrimateAI_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# REVEL
+dns_REVEL <- dns %>%
+  filter(REVEL_score != "-") %>%
+  mutate(REVEL_score = as.numeric(REVEL_score)
+  )
+
+dim(dns_REVEL)
+range(dns_REVEL$REVEL_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("REVEL_thresh_%f", i)
+  dns_REVEL <- dns_REVEL %>%
+    mutate(!!column_name := as.numeric(REVEL_score >= i))
+}
+dns_REVEL <- dns_REVEL %>%
+  select(id_external, "REVEL_thresh_0.000000":REVEL_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# SIFT
+dns_SIFT <- dns %>%
+  filter(SIFT4G_score != "-") %>%
+  mutate(SIFT4G_score = as.numeric(SIFT4G_score)
+  )
+
+dim(dns_SIFT)
+range(dns_SIFT$SIFT4G_score)
+
+for (i in seq(1, 0, by = -.05)) {
+  column_name = sprintf("SIFT_thresh_%f", i)
+  dns_SIFT <- dns_SIFT %>%
+    mutate(!!column_name := as.numeric(SIFT4G_score <= i))
+}
+dns_SIFT <- dns_SIFT %>%
+  select(id_external, "SIFT_thresh_1.000000":"SIFT_thresh_0.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+# VARITYer
+dns_VARITYer <- dns %>%
+  filter(VARITY_ER_LOO_score != "-") %>%
+  mutate(VARITY_ER_LOO_score = as.numeric(VARITY_ER_LOO_score)
+  )
+
+dim(dns_VARITYer)
+range(dns_VARITYer$VARITY_ER_LOO_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("VARITYer_thresh_%f", i)
+  dns_VARITYer <- dns_VARITYer %>%
+    mutate(!!column_name := as.numeric(VARITY_ER_LOO_score >= i))
+}
+dns_VARITYer <- dns_VARITYer %>%
+  select(id_external, "VARITYer_thresh_0.000000":VARITYer_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# VARITYr
+dns_VARITYr <- dns %>%
+  filter(VARITY_R_LOO_score != "-") %>%
+  mutate(VARITY_R_LOO_score = as.numeric(VARITY_R_LOO_score)
+  )
+
+dim(dns_VARITYr)
+range(dns_VARITYr$VARITY_R_LOO_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("VARITYr_thresh_%f", i)
+  dns_VARITYr <- dns_VARITYr %>%
+    mutate(!!column_name := as.numeric(VARITY_R_LOO_score >= i))
+}
+dns_VARITYr <- dns_VARITYr %>%
+  select(id_external, "VARITYr_thresh_0.000000":VARITYr_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# VEST4
+dns_VEST4 <- dns %>%
+  filter(VEST4_score != "-") %>%
+  mutate(VEST4_score = as.numeric(VEST4_score)
+  )
+
+dim(dns_VEST4)
+range(dns_VEST4$VEST4_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("VEST4_thresh_%f", i)
+  dns_VEST4 <- dns_VEST4 %>%
+    mutate(!!column_name := as.numeric(VEST4_score >= i))
+}
+dns_VEST4 <- dns_VEST4 %>%
+  select(id_external, "VEST4_thresh_0.000000":VEST4_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# bstat
+dns_bstat <- dns %>%
+  filter(bStatistic != "-") %>%
+  mutate(bStatistic = as.numeric(bStatistic)
+  )
+
+dim(dns_bstat)
+range(dns_bstat$bStatistic)
+
+for (i in seq(1000, 0, by = -50)) {
+  column_name = sprintf("bstat_thresh_%f", i)
+  dns_bstat <- dns_bstat %>%
+    mutate(!!column_name := as.numeric(bStatistic <= i))
+}
+dns_bstat <- dns_bstat %>%
+  select(id_external, "bstat_thresh_1000.000000":"bstat_thresh_0.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# fathmm
+dns_fathmm <- dns %>%
+  filter(fathmm.XF_coding_score != "-") %>%
+  mutate(fathmm.XF_coding_score = as.numeric(fathmm.XF_coding_score)
+  )
+
+dim(dns_fathmm)
+range(dns_fathmm$fathmm.XF_coding_score)
+
+for (i in seq(1, 0, by = -.05)) {
+  column_name = sprintf("fathmm_thresh_%f", i)
+  dns_fathmm <- dns_fathmm %>%
+    mutate(!!column_name := as.numeric(fathmm.XF_coding_score <= i))
+}
+dns_fathmm <- dns_fathmm %>%
+  select(id_external, "fathmm_thresh_1.000000":"fathmm_thresh_0.000000")%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+# gMVP
+dns_gMVP <- dns %>%
+  filter(gMVP_score != "-") %>%
+  mutate(gMVP_score = as.numeric(gMVP_score)
+  )
+
+dim(dns_gMVP)
+range(dns_gMVP$gMVP_score)
+
+for (i in seq(0, 1, by = .05)) {
+  column_name = sprintf("gMVP_thresh_%f", i)
+  dns_gMVP <- dns_gMVP %>%
+    mutate(!!column_name := as.numeric(gMVP_score >= i))
+}
+dns_gMVP <- dns_gMVP %>%
+  select(id_external, "gMVP_thresh_0.000000":gMVP_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# popEVE
+dns_popEVE <- dns %>%
+  filter(popEVE_score != "-") %>%
+  mutate(popEVE_score = as.numeric(popEVE_score)
+  )
+
+dim(dns_popEVE)
+range(dns_popEVE$popEVE_score)
+
+for (i in seq(-6.3, 2.4, by = .1)) {
+  column_name = sprintf("popEVE_thresh_%f", i)
+  dns_popEVE <- dns_popEVE %>%
+    mutate(!!column_name := as.numeric(popEVE_score >= i))
+}
+dns_popEVE <- dns_popEVE %>%
+  select(id_external, "popEVE_thresh_-6.300000":popEVE_thresh_2.400000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# phastCons17
+dns_phastCons17 <- dns %>%
+  filter(phastCons17way_primate != "-", Consequence_simple == "missense_variant") %>%
+  mutate(phastCons17way_primate = as.numeric(phastCons17way_primate)
+  )
+
+dim(dns_phastCons17)
+range(dns_phastCons17$phastCons17way_primate)
+
+for (i in seq(0, 1, by = 0.05)) {
+  column_name = sprintf("phastCons17_thresh_%f", i)
+  dns_phastCons17 <- dns_phastCons17 %>%
+    mutate(!!column_name := as.numeric(phastCons17way_primate >= i))
+}
+dns_phastCons17 <- dns_phastCons17 %>%
+  select(id_external, "phastCons17_thresh_0.000000":phastCons17_thresh_1.000000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+# phyloP17
+dns_phyloP17 <- dns %>%
+  filter(phyloP17way_primate != "-", Consequence_simple == "missense_variant") %>%
+  mutate(phyloP17way_primate = as.numeric(phyloP17way_primate)
+  )
+
+dim(dns_phyloP17)
+range(dns_phyloP17$phyloP17way_primate)
+
+for (i in seq(-6, 0.75, by = 0.25)) {
+  column_name = sprintf("phyloP17_thresh_%f", i)
+  dns_phyloP17 <- dns_phyloP17 %>%
+    mutate(!!column_name := as.numeric(phyloP17way_primate >= i))
+}
+dns_phyloP17 <- dns_phyloP17 %>%
+  select(id_external, "phyloP17_thresh_-6.000000":phyloP17_thresh_0.750000)%>%
+  group_by(id_external) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+
+
+
+
+
+pedstat = ped %>%
+  left_join(dns_stats0, by = "id_external") %>%
+  left_join(dns_stats1, by = "id_external") %>%
+  left_join(dns_lgd, by = "id_external") %>%
+  left_join(dns_alphamissense, by = "id_external") %>%
+  left_join(dns_bayesdel_addAF, by = "id_external") %>%
+  left_join(dns_bayesdel_noAF, by = "id_external") %>%
+  left_join(dns_bstat, by = "id_external") %>%
+  left_join(dns_CADD, by = "id_external") %>%
+  left_join(dns_clinpred, by = "id_external") %>%
+  left_join(dns_DANN, by = "id_external") %>%
+  left_join(dns_deogen2, by = "id_external") %>%
+  left_join(dns_eigen, by = "id_external") %>%
+  left_join(dns_esm, by = "id_external") %>%
+  left_join(dns_fathmm, by = "id_external") %>%
+  left_join(dns_GERPnr, by = "id_external") %>%
+  left_join(dns_GERPrs, by = "id_external") %>%
+  left_join(dns_gMVP, by = "id_external") %>%
+  left_join(dns_LIST, by = "id_external") %>%
+  left_join(dns_mcap, by = "id_external") %>%
+  left_join(dns_MetaLR, by = "id_external") %>%
+  left_join(dns_MetaRNN, by = "id_external") %>%
+  left_join(dns_MetaSVM, by = "id_external") %>%
+  left_join(dns_MisFitD, by = "id_external") %>%
+  left_join(dns_MisFitS, by = "id_external") %>%
+  left_join(dns_MutationAssessor, by = "id_external") %>%
+  left_join(dns_MutationTaster, by = "id_external") %>%
+  left_join(dns_MutFormer, by = "id_external") %>%
+  left_join(dns_MutPred2, by = "id_external") %>%
+  left_join(dns_MutScore, by = "id_external") %>%
+  left_join(dns_mpc, by = "id_external") %>%
+  left_join(dns_MVP, by = "id_external") %>%
+  left_join(dns_PHACTboost, by = "id_external") %>%
+  left_join(dns_phastCons17, by = "id_external") %>%
+  left_join(dns_phyloP17, by = "id_external") %>%
+  left_join(dns_polyphen_hdiv, by = "id_external") %>%
+  left_join(dns_polyphen_var, by = "id_external") %>%
+  left_join(dns_popEVE, by = "id_external") %>%
+  left_join(dns_PrimateAI, by = "id_external") %>%
+  left_join(dns_PROVEAN, by = "id_external") %>%
+  left_join(dns_REVEL, by = "id_external") %>%
+  left_join(dns_SIFT, by = "id_external") %>%
+  left_join(dns_VARITYer, by = "id_external") %>%
+  left_join(dns_VARITYr, by = "id_external") %>%
+  left_join(dns_VEST4, by = "id_external") %>%
+  mutate_if(is.numeric, ~replace_na(., 0))
+
+
+
+# write_delim(pedstat, "fet_table.tsv",delim = "\t")
+```
+
+# rare/dn variant OCDCTD network burden
+
+## FET (dam/syn, case/ctrl)
+
+We want to iterate burden tests stratified by NetColoc Z's around the threshold of Z \>= 3 or not
+
+Function ( adapted from `BWOCDworking1.4_OCDCTD_burden.qmd` )
+
+```{r}
+#FUNCTION for FET by cohort
+# cohort_column: column that defines cohorts of interest in pedstat table
+# mutype: vector of mtation types of interest in pedstat table
+# pedstat: pedstat table generated from code above
+# interval: character of what interval variants are restricted to (e.g. consensus, restricted)
+
+
+
+FET.mutsyn.casectrl <- function(f_cohort_col, f_mutype, f_pedstat, f_interval) {
+  # Convert the column name from character to symbol to allow tidyverse fnctions
+  
+  f_cohort_col <- sym(f_cohort_col)
+  
+  #extract unique cohorts
+  cohort = f_pedstat %>% pull(!!f_cohort_col) %>% unique
+
+  results <- lapply(cohort, function(x) {
+    lapply(f_mutype, function(y) {
+      
+      # Filter data for cases and controls (ssc_sib as control)
+      case <- f_pedstat %>% filter(!!f_cohort_col == x)
+      ctrl <- f_pedstat %>% filter(!!f_cohort_col %in% c("SSC", "ssc_sib"))
+      
+      case_count = sum(case[, y])
+      ctrl_count = sum(ctrl[, y])
+      adjusted = FALSE
+      if (ctrl_count == 0) {
+        ctrl_count = 1
+        case_count = 2 * case_count
+        adjusted = TRUE
+      }
+      
+      # Create matrix for Fisher's test
+      dat <- matrix(
+        c(
+          case_count,                       # Case count for the given mutation type
+          ctrl_count,                       # Control count for the given mutation type
+          sum(case[, "synonymous_variant"]),    # Case count for synonymous variants
+          sum(ctrl[, "synonymous_variant"])     # Control count for synonymous variants
+        ),
+        nrow = 2, byrow = TRUE
+      )
+      # Perform Fisher's test and tidy up the results
+      fisher_test_result <- fisher.test(dat, alternative = "greater") %>%
+        broom::tidy() %>%
+        mutate(mutype = y,
+               annotation = strsplit(y, "_")[[1]][1],
+               adjusted = adjusted,
+               cohort = x, 
+               interval = f_interval,
+               case_mut_count = dat[1, 1],           # Case count for the mutation type
+               ctrl_mut_count = dat[1, 2],           # Control count for the mutation type
+               case_syn_count = dat[2, 1],           # Case count for synonymous variants
+               ctrl_syn_count = dat[2, 2]            # Control count for synonymous variants
+        )
+      
+      return(fisher_test_result)
+    })
+  }) %>%
+    bind_rows()
+  # Return the final results1 table
+  return(results)
+}
+```
+
+### Run FETs and plot
+
+Adapted from BWOCDworking1.4_OCDCTD_burden.qmd
+
+```{r}
+## Generate pedstats ===
+
+## MNT - not sure if it is more appropriate to us hcOCD, hcTD-based network scores
+# pedstat_burden_ocd = get_pedstats(ped = fams, dns = dn_burden_trim) %>% 
+#   filter(!is.na(cohortOCD)) %>%
+#   mutate(cohortOCD = factor(cohortOCD, levels=c("SSC", "OCD")))
+# 
+# pedstat_burden_td = get_pedstats(ped = fams, dns = dn_burden_trim) %>% 
+#   filter(!is.na(cohortTD)) %>%
+#   mutate(cohortTD = factor(cohortTD, levels=c("SSC", "TD")))
+
+dim(pedstat)
+
+pedstat_burden_OCDCTD = pedstat %>%
+  mutate(cohortOCDCTD = factor(cohortOCDCTD, levels=c("SSC", "OCDCTD")))
+
+mutype = pedstat_burden_OCDCTD %>% dplyr::select(-colnames(fams2)) %>% colnames()
+
+
+results.FET = FET.mutsyn.casectrl(f_cohort_col= "cohortOCDCTD", 
+                                  f_mutype = mutype,
+                                  f_pedstat= pedstat_burden_OCDCTD,
+                                  f_interval = "consensus") 
+
+
+
+#overall
+ocd_results <- results.FET %>%
+  filter(cohort == "OCDCTD")
+
+max_estimates <- ocd_results %>%
+  mutate(estimate = if_else(is.infinite(estimate), 0, estimate)) %>%
+  group_by(annotation) %>%
+  slice_max(estimate)
+
+
+ocd_results %>%
+  mutate(sig = p.value <= 0.1, logp = -log(p.value)) %>%
+  filter(annotation != "lgd", annotation != "stop",annotation != "ptv") %>%
+  ggplot(aes(x = estimate, y = case_mut_count)) +
+  geom_point(aes(color = annotation)) +
+  geom_vline(xintercept = 1) 
+
+
+
+
+#MPC
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^mpc_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "MPC Scoring Thresholds (# Variants: 1704)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#PolyphenHdiv
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^polyphenHDIV_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "Polyphen (HDIV) Scoring Thresholds (# Variants: 2189)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#PolyphenHvar
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^polyphenHVAR_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "Polyphen (HVAR) Scoring Thresholds (# Variants: 2189)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+
+#AlphaMissense
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^alphamissense_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "Alphamissense Scoring Thresholds (# Variants: 2317)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+
+#BayesDel AddAF
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^BayesDel_addAF_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "BayesDel AddAF Scoring Thresholds (# Variants: 2515)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  ) + geom_vline(xintercept = 0.0693)
+
+
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^BayesDel_noAF_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "BayesDel noAF Scoring Thresholds (# Variants: 2515)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  ) + geom_vline(xintercept = -0.057)
+
+
+#CADD
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^CADD_raw_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "CADD Scoring Thresholds (# Variants: 2541)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+
+#ClinPred
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^clinpred_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "ClinPred Scoring Thresholds (# Variants: 2501)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#DANN
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^dann_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "DANN Scoring Thresholds (# Variants: 2525)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#DEOGEN2
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^deogen_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "DEOGEN2 Scoring Thresholds (# Variants: 2155)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#ESM
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^esm_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.1) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "ESM Scoring Thresholds (# Variants: 2541)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#Eigen
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^eigen_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "Eigen Scoring Thresholds (# Variants: 2449)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#GERPrs
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^GERPrs_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "GERP (RS) Scoring Thresholds (# Variants: 2524)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#GERPnr
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^GERPnr_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "GERP (NR) Scoring Thresholds (# Variants: 2524)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#LIST
+
+
+
+#M.CAP
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^mcap_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = estimate, y = threshold)) +
+  geom_errorbar(aes(xmin = conf.low, xmax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_vline(xintercept = 1) +
+  labs(
+    title = "M.CAP Scoring Thresholds (# Variants: 2499)",
+    x = "Odds Ratio",
+    y = "Threshold"
+  ) +scale_y_reverse()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#MVP
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^mvp_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "MVP Scoring Thresholds (# Variants: 2299)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#phastCons17
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^phastCons17_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "phastCons17 Scoring Thresholds (# Variants: 2541)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+#phyloP17
+results.FET %>%
+  filter(cohort == "OCDCTD", str_detect(mutype, "^phyloP17_thresh_")) %>%
+  arrange(mutype) %>%
+  mutate(threshold = as.numeric(str_split_i(mutype, "_", -1)), logp = -log(p.value), sig = p.value <= 0.05) %>%
+  ggplot(aes(x = threshold, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = estimate), width = 0.01) +
+  geom_point(aes(size = logp, color = sig)) +
+  geom_hline(yintercept = 1) +
+  labs(
+    title = "phyloP Scoring Thresholds (# Variants: 2541)",
+    x = "Threshold",
+    y = "Odds Ratio"
+  )
+
+
+
+results%>%
+  mutate(mutype = factor(mutype, 
+                         levels = c(order_mutype, setdiff(mutype, order_mutype)))) %>%
+    mutate(mutype_label = recode(mutype, !!!recode_mutype))
+
+# this is fine
+setdiff(levels(results.FET$mutype), results.FET$mutype)
+# [1] "lgd_loeuf_0_10"    "lgd_loeuf_10_100"  "lgd_loeuf_0_20"    "lgd_loeuf_20_100"  "mis3_loeuf_0_20"  
+# [6] "mis3_loeuf_20_100" "am_misOth"         "synAC1"            "totalRareVar"  
+
+
+# === Reusable Plotting Function (MNT updated to be dynamic) ===
+plot_fet <- function(data, title) {
+  
+  
+  y_range <- range(c(data$conf.low, data$conf.high[!is.infinite(data$conf.high)]), na.rm = TRUE)
+  y_mid   <- mean(y_range)
+  nudge_amt <- diff(y_range) * 0.5  # tune this scalar as needed
+  
+  data %>%
+    # mutate(
+    #   text_nudge = ifelse(estimate > y_mid_external, -nudge_amt, nudge_amt)
+    # ) %>%
+    ggplot(aes(x = mutype, y = estimate)) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    geom_point() +
+    geom_pointrange(aes(ymin = conf.low, ymax = conf.high)) +
+    # coord_flip() +
+    geom_text(aes(
+      y = estimate, # + text_nudge,
+      label = paste0("OR = ", round(estimate, 2),
+                     ", p = ", signif(p.value, 2)),
+      color = p.value < 0.05
+    ),
+    vjust = -0.5, size = 2.5, show.legend = FALSE) +
+    scale_color_manual(values = c(`TRUE` = "red", `FALSE` = "black")) +
+    theme_light() +
+    labs(title = title,
+         y = "Odds Ratio",
+         x = "")
+}
+
+# === Plot 1 === Broad categories
+p2a <- results.FET %>% filter(cohort=="OCDCTD") %>%
+  filter(mutype %in% c("totaldnVar", "lgd", "missense_variant", "synonymous_variant")) %>%
+  plot_fet("Broad Variant Classes")
+
+# === Plot 2 === LGD
+p2b <- results.FET %>%filter(cohort=="OCDCTD") %>%
+  filter(mutype %in% c("lgd", "ptv", "inframe_indel",
+                       "frameshift_variant", "stop_gained", "splice_donor_variant", 
+                       "splice_acceptor_variant", "inframe_deletion", "inframe_insertion", 
+                       "start_lost", "stop_lost")) %>%
+  plot_fet("B. Functional Impact: LGD subcategories")
+
+# === Plot 3 === LGD x constraint
+results.FET %>% filter(cohort=="OCDCTD") %>%
+  filter(mutype %in% c("lgd",
+                       "lgd_pLI_ge_0.9", "lgd_pLI_lt_0.9", "lgd_pLI_ge_0.5", "lgd_pLI_lt_0.5",
+                       "lgd_loeuf_0_40",  "lgd_loeuf_40_100")) %>%
+  plot_fet("LGD by Constraint (pLI / LOEUF)")
+
+# === Plot 4 === Missense + subtypes
+p2d <- results.FET %>% filter(cohort=="OCDCTD") %>%
+  filter(mutype %in% c("Mis3", "Mis2", "Mis1", "mpcMis3", "mpcMis2", "mpcMis1")) %>%
+  plot_fet("Missense Subtypes")
+
+# === Plot 5 === dnDam + NetColoc thresholds
+p2e <- results.FET %>% filter(cohort=="OCDCTD") %>%
+  filter(mutype %in% c("")) %>%
+  plot_fet("C. LGD by Constraint (pLI / LOEUF)")
+
+# Iteration with dnDam-NetColoc-Z with the seed genes removed
+p2f <- results.FET %>% filter(cohort=="OCDCTD") %>%
+  filter(grepl("zNet_sansOCDCTD", mutype) |
+           (mutype %in% c("LGD_w_Mis3", "LGD_w_Mis3_sansOCDCTD36"))) %>%
+  plot_fet("D. dnDam with NetColoc-Z (hcOCDCTD36,\n seed removed)")
+
+
+# === Layout ===
+p2p1 = (p2a | p2b) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "OCD vs SSCsib, FET case/ctrl dnVar/dnSyn,  Consensus")
+  theme(legend.position = "none")
+  
+
+p2p2 = ( p2e | p2f ) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "OCD vs SSCsib, FET case/ctrl dnVar/dnSyn,  Consensus (hcOCDCTD network genes, PCNet v2.2 via NetColoc)")
+  theme(legend.position = "none")
+
+
+```
+
+## Jaccard Similarity
+
+```{r}
+jaccard_sim <- function(set1, set2) {
+  jaccard <- length(intersect(set1, set2)) / length(union(set1, set2))
+  return(jaccard)
+}
+
+overlap_sim <- function(set1, set2) {
+  overlap <- length(intersect(set1, set2)) / min(length(unique(set1)), length(unique(set2)))
+  return(overlap)
+}
+
+mvp_0.65 <- dns %>%
+  filter(as.numeric(MVP_score) >= 0.65, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+metasvm_0.5n <- dns %>%
+  filter(as.numeric(MetaSVM_score) >= -0.5, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+metalr_0.35 <- dns %>%
+  filter(as.numeric(MetaLR_score) >= 0.35, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mpc_0.7 <- dns %>%
+  filter(as.numeric(MPC_score) >= 0.7, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+primateai_0.75 <- dns %>%
+  filter(as.numeric(PrimateAI_score) >= 0.75, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+gmvp_0.7 <- dns %>%
+  filter(as.numeric(gMVP_score) >= 0.7, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+deogen_0.5 <- dns %>%
+  filter(as.numeric(DEOGEN2_score) >= 0.5, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mcap_0.15 <- dns %>%
+  filter(as.numeric(M.CAP_score) >= 0.15, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mutformer_0.75 <- dns %>%
+  filter(as.numeric(MutFormer_score) >= 0.75, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+revel_0.8 <- dns %>%
+  filter(as.numeric(REVEL_score) >= 0.8, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+bayesnoAF_0.4 <- dns %>%
+  filter(as.numeric(BayesDel_noAF_score) >= 0.4, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+misfitS_0.05 <- dns %>%
+  filter(as.numeric(MisFit_S_score) >= 0.05, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+popeve_2.5n <- dns %>%
+  filter(as.numeric(popEVE_score) >= -2.5, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+bayesaddAF_0.55 <- dns %>%
+  filter(as.numeric(BayesDel_addAF_score) >= 0.55, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+misfitD_0.95 <- dns %>%
+  filter(as.numeric(MisFit_D_score) >= 0.95, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+cadd_7.25 <- dns %>%
+  filter(as.numeric(CADD_raw) >= 7.25, is_ctrl == 0) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+```
+
+```{r}
+
+mvp_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MVP_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+metasvm_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MetaSVM_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+metalr_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MetaLR_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mpc_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MPC_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+primateai_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(PrimateAI_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+gmvp_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(gMVP_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+deogen_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(DEOGEN2_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mcap_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(M.CAP_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+mutformer_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MutFormer_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+revel_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(REVEL_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+bayesnoAF_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(BayesDel_noAF_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+misfitS_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MisFit_S_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+popeve_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(popEVE_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+bayesaddAF_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(BayesDel_addAF_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+misfitD_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(MisFit_D_score))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+cadd_250 <- dns %>%
+  filter(is_ctrl == 0) %>%
+  arrange(desc(as.numeric(CADD_raw))) %>%
+  head(250) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+```
+
+```{r}
+geneset <- read_excel("genesets.xlsx")
+
+hc_geneset <- geneset %>%
+  select(hcOCDCTD) %>%
+  filter(!is.na(hcOCDCTD)) %>%
+  mutate(SYMBOL = hcOCDCTD) %>%
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+p_geneset <- geneset %>%
+  select(pOCDCTD) %>%
+  filter(!is.na(pOCDCTD)) %>%
+  mutate(SYMBOL = pOCDCTD) %>% 
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+pl_geneset <- geneset %>%
+  select(pOCDCTD_lenientOnly) %>%
+  filter(!is.na(pOCDCTD_lenientOnly)) %>%
+  mutate(SYMBOL = pOCDCTD_lenientOnly) %>% 
+  select(SYMBOL) %>%
+  arrange(SYMBOL) %>%
+  as.list()
+
+all_genes <- append(hc_geneset$SYMBOL, p_geneset$SYMBOL)
+all_genes <- append(all_genes, pl_geneset$SYMBOL)
+all_genes <- list(SYMBOL = all_genes)
+all_genes$SYMBOL
+```
+
+```{r}
+all_jaccard <- function(curr_set) {
+  return(
+    c(
+      jaccard_sim(curr_set$SYMBOL, hc_geneset$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, all_genes$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mvp_0.65$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, metasvm_0.5n$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, metalr_0.35$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mpc_0.7$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, primateai_0.75$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, gmvp_0.7$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, deogen_0.5$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mcap_0.15$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mutformer_0.75$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, revel_0.8$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, bayesnoAF_0.4$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, misfitS_0.05$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, popeve_2.5n$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, bayesaddAF_0.55$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, misfitD_0.95$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, cadd_7.25$SYMBOL)
+    )
+  )
+  
+}
+
+all_overlap <- function(curr_set) {
+  return(
+    c(
+      overlap_sim(curr_set$SYMBOL, hc_geneset$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, all_genes$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, mvp_0.65$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, metasvm_0.5n$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, metalr_0.35$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, mpc_0.7$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, primateai_0.75$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, gmvp_0.7$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, deogen_0.5$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, mcap_0.15$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, mutformer_0.75$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, revel_0.8$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, bayesnoAF_0.4$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, misfitS_0.05$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, popeve_2.5n$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, bayesaddAF_0.55$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, misfitD_0.95$SYMBOL),
+      overlap_sim(curr_set$SYMBOL, cadd_7.25$SYMBOL)
+    )
+  )
+  
+}
+
+all_250 <- function(curr_set) {
+  return(
+    c(
+      jaccard_sim(curr_set$SYMBOL, mvp_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, metasvm_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, metalr_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mpc_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, primateai_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, gmvp_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, deogen_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mcap_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, mutformer_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, revel_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, bayesnoAF_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, misfitS_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, popeve_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, bayesaddAF_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, misfitD_250$SYMBOL),
+      jaccard_sim(curr_set$SYMBOL, cadd_250$SYMBOL)
+    )
+  )
+  
+}
+
+hc_genes_jac <- all_jaccard(hc_geneset)
+hc_genes_overlap <- all_overlap(hc_geneset)
+
+all_genes_jac <- all_jaccard(all_genes)
+all_genes_overlap <- all_overlap(all_genes)
+
+mvp_jac <- all_jaccard(mvp_0.65)
+mvp_overlap <- all_overlap(mvp_0.65)
+mvp_overlap_250 <- all_250(mvp_250)
+
+metasvm_jac <- all_jaccard(metasvm_0.5n)
+metasvm_overlap <- all_overlap(metasvm_0.5n)
+metasvm_overlap_250 <- all_250(metasvm_250)
+
+metalr_jac <- all_jaccard(metalr_0.35)
+metalr_overlap <- all_overlap(metalr_0.35)
+metalr_overlap_250 <- all_250(metalr_250)
+
+mpc_jac <- all_jaccard(mpc_0.7)
+mpc_overlap <- all_overlap(mpc_0.7)
+mpc_overlap_250 <- all_250(mpc_250)
+
+primateai_jac <- all_jaccard(primateai_0.75)
+primateai_overlap <- all_overlap(primateai_0.75)
+primateai_overlap_250 <- all_250(primateai_250)
+
+gmvp_jac <- all_jaccard(gmvp_0.7)
+gmvp_overlap <- all_overlap(gmvp_0.7)
+gmvp_overlap_250 <- all_250(gmvp_250)
+
+deogen_jac <- all_jaccard(deogen_0.5)
+deogen_overlap <- all_overlap(deogen_0.5)
+deogen_overlap_250 <- all_250(deogen_250)
+
+mcap_jac <- all_jaccard(mcap_0.15)
+mcap_overlap <- all_overlap(mcap_0.15)
+mcap_overlap_250 <- all_250(mcap_250)
+
+mutformer_jac <- all_jaccard(mutformer_0.75)
+mutformer_overlap <- all_overlap(mutformer_0.75)
+mutformer_overlap_250 <- all_250(mutformer_250)
+
+revel_jac <- all_jaccard(revel_0.8)
+revel_overlap <- all_overlap(revel_0.8)
+revel_overlap_250 <- all_250(revel_250)
+
+bayesnoAF_jac <- all_jaccard(bayesnoAF_0.4)
+bayesnoAF_overlap <- all_overlap(bayesnoAF_0.4)
+bayesnoAF_overlap_250 <- all_250(bayesnoAF_250)
+
+misfitS_jac <- all_jaccard(misfitS_0.05)
+misfitS_overlap <- all_overlap(misfitS_0.05)
+misfitS_overlap_250 <- all_250(misfitS_250)
+
+popeve_jac <- all_jaccard(popeve_2.5n)
+popeve_overlap <- all_overlap(popeve_2.5n)
+popeve_overlap_250 <- all_250(popeve_250)
+
+bayesaddAF_jac <- all_jaccard(bayesaddAF_0.55)
+bayesaddAF_overlap <- all_overlap(bayesaddAF_0.55)
+bayesaddAF_overlap_250 <- all_250(bayesaddAF_250)
+
+misfitD_jac <- all_jaccard(misfitD_0.95)
+misfitD_overlap <- all_overlap(misfitD_0.95)
+misfitD_overlap_250 <- all_250(misfitD_250)
+
+cadd_jac <- all_jaccard(cadd_7.25)
+cadd_overlap <- all_overlap(cadd_7.25)
+cadd_overlap_250 <- all_250(cadd_250)
+```
+
+## Heat Map
+
+```{r}
+sig_OR_jac <- data.frame(HC_genes = hc_genes_jac,
+                         ALL_genes = all_genes_jac,
+                         MVP = mvp_jac,
+                         metaSVM = metasvm_jac,
+                         metaLR = metalr_jac,
+                         MPC = mpc_jac,
+                         PrimateAI = primateai_jac,
+                         gMVP = gmvp_jac,
+                         DEOGEN2 = deogen_jac,
+                         M.CAP = mcap_jac,
+                         MutFormer = mutformer_jac,
+                         REVEL = revel_jac,
+                         BayesDel_noAF = bayesnoAF_jac,
+                         MisFitS = misfitS_jac,
+                         popEVE = popeve_jac,
+                         BayesDel_addAF = bayesaddAF_jac,
+                         MisFitD = misfitD_jac,
+                         CADD = cadd_jac
+                         )
+
+sig_OR_overlap <- data.frame(HC_genes = hc_genes_overlap,
+                             ALL_genes = all_genes_overlap,
+                             MVP = mvp_overlap,
+                             metaSVM = metasvm_overlap,
+                             metaLR = metalr_overlap,
+                             MPC = mpc_overlap,
+                             PrimateAI = primateai_overlap,
+                             gMVP = gmvp_overlap,
+                             DEOGEN2 = deogen_overlap,
+                             M.CAP = mcap_overlap,
+                             MutFormer = mutformer_overlap,
+                             REVEL = revel_overlap,
+                             BayesDel_noAF = bayesnoAF_overlap,
+                             MisFitS = misfitS_overlap,
+                             popEVE = popeve_overlap,
+                             BayesDel_addAF = bayesaddAF_overlap,
+                             MisFitD = misfitD_overlap,
+                             CADD = cadd_overlap
+)
+
+sig_OR_250 <- data.frame(MVP = mvp_overlap_250,
+                             metaSVM = metasvm_overlap_250,
+                             metaLR = metalr_overlap_250,
+                             MPC = mpc_overlap_250,
+                             PrimateAI = primateai_overlap_250,
+                             gMVP = gmvp_overlap_250,
+                             DEOGEN2 = deogen_overlap_250,
+                             M.CAP = mcap_overlap_250,
+                             MutFormer = mutformer_overlap_250,
+                             REVEL = revel_overlap_250,
+                             BayesDel_noAF = bayesnoAF_overlap_250,
+                             MisFitS = misfitS_overlap_250,
+                             popEVE = popeve_overlap_250,
+                             BayesDel_addAF = bayesaddAF_overlap_250,
+                             MisFitD = misfitD_overlap_250,
+                             CADD = cadd_overlap_250
+)
+
+
+rownames(sig_OR_250) <- colnames(sig_OR_250)
+
+sig_OR_250[lower.tri(sig_OR_250)] <- NA
+
+sig_OR_250 <- as.matrix(sig_OR_250)
+
+df <- reshape2::melt(sig_OR_250, na.rm = TRUE)
+
+ggheatmap <- ggplot(df, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "white", high = "red", mid = "pink", 
+                       midpoint = 0.5, limit = c(0,1), space = "Lab", 
+                       name="Jaccard Similarity Index") +
+  theme_minimal()+ # minimal theme
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 12, hjust = 1), axis.text.y = element_text(size = 12))+
+  coord_fixed()
+
+ggheatmap + 
+  geom_text(aes(Var2, Var1, label = round(value, 2)), color = "black", size = 2.5) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    legend.direction = "vertical")+
+  guides(fill = guide_colorbar(barwidth = 1.5, barheight = 10,
+                               title.position = "top", title.hjust = 0.5)) +
+  labs(title = "Overlap of Genes in Significant (top 250)")
+```

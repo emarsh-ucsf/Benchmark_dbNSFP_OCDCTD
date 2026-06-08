@@ -1,0 +1,60 @@
+Tools:
+conservation-based scoring to supervised training on known mutation effect data and majority-vote ensemble models
+https://pmc.ncbi.nlm.nih.gov/articles/PMC9774026/
+
+
+SIFT (Sorting Intolerant From Tolerant): sequence homology and the physical properties of amino acids
+- considers the position at which the change occurred and the type of amino acid change
+- changes at well-conserved positions tend to be predicted as deleterious
+- Based on the amino acids appearing at each position in the alignment, SIFT calculates the probability that an amino acid at a position is tolerated conditional on the most frequent amino acid being tolerated
+
+
+SIFT4G (Sorting Intolerant From Tolerant for Genomes): bioinformatics tool that predicts whether amino acid substitutions affect protein function, classifying them as "deleterious" or "tolerated"
+- faster version of sift
+
+PROVEAN (Protein Variation Effect Analyzer): software tool which predicts whether an amino acid substitution or indel has an impact on the biological function of a protein
+- alignment based score approach
+- single amino acid and multiple amino acid substitutions/insertions/deletions
+
+PolyPhen-2 (Polymorphism Phenotyping v2): predicts the possible impact of amino acid substitutions on the stability and function of human proteins using structural and comparative evolutionary considerations
+- functional annotation of single-nucleotide polymorphisms (SNPs)
+- maps coding SNPs to gene transcripts
+- extracts protein sequence annotations and structural attributes
+- builds conservation profiles
+
+MutationTaster 2021
+- Random Forest models tailored to different types of variants
+- same prediction quality for benign and deleterious variants
+- UTR predictions
+- Instead of the internal probability of the Bayes classifier used in the previous releases, the new output indicates how many decision trees of the Random Forest are suggestive of deleteriousness
+- splice site predicition
+
+MutationAssessor (MA): predicts the functional impact of protein-coding mutations (somatic and germline) by analyzing amino acid conservation across protein families
+- based on analysis of patterns of conservation in protein families (conserved residues) and subfamilies (specificity residues)
+- combinatorial entropy analysis of conservation patterns
+- unsupervised, conservation-based tools, uniquely incorporating subfamily-specific conservation to detect functional shifts that global conservation metrics may miss
+- cancer specific?
+- The conservation and specificity scores reflect how a mutation is consistent with or violates the conservation patterns observed in evolution within a protein family and its subfamilies
+- more and less fit ideas (loss and gain of function)
+
+FATHMM-XF: Enhanced Accuracy in Predicting the Functional Consequences of Non-Coding and Coding Single Nucleotide Variants
+- non-coding regions where the majority of pathogenic mutations are likely to be found
+- higher accuracy than CADD
+- assigns a confidence score (a p-score) to every prediction, to simplify interpretation, and focus analysis on a subset of high-confidence predictions (cautious classification)
+
+CADD (Combined Annotation Dependent Depletion): scoring the deleteriousness of single nucleotide variants, multi-nucleotide substitutions as well as insertion/deletions variants in the human genome
+- well developed
+- integrates multiple annotations into one metric by contrasting variants that survived natural selection with simulated mutations
+- state-of-the-art protein language model scores (Meta ESM-1v), regulatory variant effect predictions (from sequence-based convolutional neural networks) and sequence conservation scores (Zoonomia)
+- svm
+
+VEST4 (Variant Effect Scoring Tool): supervised machine learning-based classifier, to prioritize rare missense variants with likely involvement in human disease
+- random forest
+
+DANN (deleterious annotation of genetic variants using neural networks): deep learning approach for annotating the pathogenicity of genetic variants
+- basically CADD's DNN brother, same data for training but a different model
+
+MetaSVM: ensemble machine learning tool used to predict the pathogenicity and functional impact of genetic variants, specifically missense variants
+- ntegrates multiple other functional prediction scores (like SIFT, PolyPhen-2, and GERP++) to classify variants as either deleterious or neutral
+- 
+
