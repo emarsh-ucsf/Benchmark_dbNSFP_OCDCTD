@@ -6,10 +6,12 @@ Please contact belinda.wang@ucsf.edu or evan.marshman@ucsf.edu for further quest
 ### Variant_Pred_tools.txt
 Notes on the various annotation tools available for missense variant annotation
 
+
 ### Data.zip
 Data files utilized or created in the process of doing the rare variant analysis. 
 
 *Note: The original .rda file that contains the cohort variants data can be acquired through contacting above emails.*
+
 
 ### Scripts
 #### OCD_paper_code.ipynb
